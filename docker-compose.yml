@@ -1,0 +1,94 @@
+# Self-hosted stack (docs.md section 10): postgres + redis + worker + bot.
+# First run:  docker compose up -d postgres redis
+#             docker compose run --rm worker alembic upgrade head
+#             docker compose up -d
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: nowaybot
+      POSTGRES_PASSWORD: nowaybot
+      POSTGRES_DB: nowaybot
+    ports:
+      # Host 5433 to avoid clashing with a locally installed Postgres on 5432.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nowaybot -d nowaybot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      # Host 6380 to avoid clashing with a locally running Redis on 6379.
+      - "6380:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: python -m worker
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://nowaybot:nowaybot@postgres:5432/nowaybot
+      REDIS_URL: redis://redis:6379/0
+      HEALTH_PORT: 8081
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./sessions:/app/sessions
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # No curl/wget in python:slim - urllib is already there. /health
+    # answers 503 when Postgres or Redis is unreachable, so "unhealthy"
+    # means "cannot do its job", not merely "process exited".
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8081/health',timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  bot:
+    build: .
+    command: python -m bot
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://nowaybot:nowaybot@postgres:5432/nowaybot
+      REDIS_URL: redis://redis:6379/0
+      HEALTH_PORT: 8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./sessions:/app/sessions
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8080/health',timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

@@ -1,0 +1,38 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# Pyrogram session files (contain auth keys - never commit)
+sessions/
+*.session
+*.session-journal
+
+# Docker volumes / local data
+pgdata/
+redisdata/
+
+# Database dumps and backups. These matter more than they look: a dump
+# holds the whole index, and the config bundle backup.sh makes contains
+# .env and the Pyrogram session files.
+backups/
+*.sql
+*.sql.gz
+*.dump
+*.tar.gz
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs and local scratch
+*.log
+scratch/
+tmp/
