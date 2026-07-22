@@ -97,14 +97,20 @@ def register_search_handlers(app: Client) -> None:
         if len(query) < 2:
             return
 
+        # Classify once: the same verdict decides whether a group hears
+        # back at all, and how a PM miss is answered.
+        intent = detect_intent(query)
+        is_group = message.chat.type != ChatType.PRIVATE
+
         session_factory = get_session_factory()
         async with session_factory() as session:
             page, used = await _resolve_query(session, message, query)
-            # Suggestions cost a query, so only pay for them when there
-            # is nothing to show and someone is actually waiting (PM).
+            # Suggestions cost a query, so only pay for them on a miss
+            # someone is waiting on: every PM, but a group only when the
+            # message is a real search attempt rather than chit-chat.
             suggestions = (
                 await suggest(session, query)
-                if not page.results and message.chat.type == ChatType.PRIVATE
+                if not page.results and (not is_group or intent is Intent.SEARCH)
                 else ()
             )
 
@@ -124,9 +130,8 @@ def register_search_handlers(app: Client) -> None:
             return
 
         # Demand is counted for group misses too: a title people keep
-        # asking for in a busy group is exactly the signal worth having,
-        # even though the group itself stays silent about it.
-        if detect_intent(query) is Intent.SEARCH:
+        # asking for in a busy group is exactly the signal worth having.
+        if intent is Intent.SEARCH:
             count = await record_miss(
                 used, message.from_user.id, get_settings().missing_threshold
             )
@@ -144,11 +149,26 @@ def register_search_handlers(app: Client) -> None:
                     },
                 )
 
-        # Groups stay quiet on a miss - a busy chat must not fill up with
-        # "nothing found", and that goes double for chit-chat replies.
-        if message.chat.type != ChatType.PRIVATE:
+        if is_group:
+            # A group only ever hears back about a genuine search, and the
+            # reply self-deletes in a few minutes - greetings and chit-chat
+            # stay silent so a busy chat is never filled with bot noise.
+            if intent is not Intent.SEARCH:
+                return
+            if suggestions:
+                text, keyboard = ui.build_suggestions(query, suggestions)
+                sent = await message.reply_text(
+                    text, parse_mode=ParseMode.HTML, reply_markup=keyboard, quote=True
+                )
+            else:
+                sent = await message.reply_text(
+                    ui.no_results_text(query), parse_mode=ParseMode.HTML, quote=True
+                )
+            await expire_in_group(message, sent)
             return
 
+        # PM: an answer always goes out. Suggestions first; otherwise read
+        # the message as conversation now that the index is confirmed empty.
         if suggestions:
             text, keyboard = ui.build_suggestions(query, suggestions)
             await message.reply_text(
@@ -156,9 +176,6 @@ def register_search_handlers(app: Client) -> None:
             )
             return
 
-        # Only now, with the index confirmed to hold nothing by this
-        # name, is it safe to read the message as conversation.
-        intent = detect_intent(query)
         if intent is Intent.GREETING:
             reply = ui.greeting_text(message.from_user.mention)
         elif intent is Intent.THANKS:

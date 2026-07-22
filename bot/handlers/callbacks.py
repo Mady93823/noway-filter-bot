@@ -133,8 +133,11 @@ def register_callback_handlers(app: Client) -> None:
 
         if callback.message and callback.message.chat.type != ChatType.PRIVATE:
             username = client.me.username
+            # g_ (not f_) so the PM handoff is logged as Route "group"
+            # rather than a generic shared deeplink - the log then tells a
+            # group tap apart from a link someone pasted elsewhere.
             await callback.answer(
-                url=f"https://t.me/{username}?start=f_{file_db_id}"
+                url=f"https://t.me/{username}?start=g_{file_db_id}"
             )
             return
 

@@ -49,7 +49,7 @@ _RATE_RE = re.compile(r"^\d+(?:\.\d+)?(?:k|kbps|mbps|mb|gb|fps)$")
 
 # Series markers. Deliberately anchored and digit-bounded so ordinary
 # title words can never be mistaken for them.
-_SEASON_EPISODE_RE = re.compile(r"^s(\d{1,2})e(\d{1,3})$")  # s01e12
+_SEASON_EPISODE_RE = re.compile(r"^s(\d{1,2})e(\d{1,3})(?:e(\d{1,3}))?$")  # s01e12, s02e08e21
 _SEASON_RE = re.compile(r"^s(\d{1,2})$")  # s01, s2
 _EPISODE_RE = re.compile(r"^e(?:p|pisode)?(\d{1,3})$")  # e01, ep01
 _BARE_NUMBER_RE = re.compile(r"^\d{1,3}$")
@@ -127,6 +127,13 @@ def _extract_series(tokens: list[str], consumed: list[bool]) -> tuple[
             episode = int(match.group(2))
             first = episode if first is None else min(first, episode)
             last = episode if last is None else max(last, episode)
+            # Double-episode file glued into one token ("s02e08e21"):
+            # without this the trailing "e21" fails the single-episode
+            # regex and the whole marker leaks into the title.
+            if match.group(3):
+                second = int(match.group(3))
+                first = min(first, second)
+                last = max(last, second)
             _mark(index)
             index += 1
             continue

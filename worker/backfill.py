@@ -11,7 +11,7 @@ import logging
 import time
 
 from pyrogram import Client
-from pyrogram.errors import FloodWait, RPCError
+from pyrogram.errors import FloodWait, MessageIdsEmpty, RPCError
 
 from shared.config import get_settings
 from shared.db.engine import get_session_factory
@@ -120,6 +120,24 @@ async def run_backfill(client: Client, channel_id: int) -> None:
                 channel_id,
             )
             await pacer.on_flood_wait(float(exc.value))
+            continue
+        except MessageIdsEmpty:
+            # Telegram serves nothing for this id window - a span of
+            # deleted messages, service-only ids, or a gap below the real
+            # head. Skip it and advance the checkpoint; halting a 900k
+            # backfill at 25% because one 100-id window is empty is the
+            # worse failure. Re-touching these ids later stays a no-op, so
+            # skipping loses nothing real.
+            logger.warning(
+                "empty id range %s-%s on channel %s - skipping",
+                start,
+                end,
+                channel_id,
+            )
+            consecutive_errors = 0
+            async with session_factory() as session, session.begin():
+                await progress_repo.checkpoint(session, channel_id, end)
+            await pacer.wait()
             continue
         except RPCError as exc:
             consecutive_errors += 1

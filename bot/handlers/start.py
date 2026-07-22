@@ -86,17 +86,21 @@ def register_start_handlers(app: Client) -> None:
         if payload.startswith("verify_"):
             await _verify(client, message, payload[len("verify_") :])
             return
-        if payload.startswith("f_") and payload[2:].isdigit():
-            if await gate.blocked(client, message.from_user):
+        # f_ = a generic shared deeplink; g_ = a group result tapped
+        # through to PM. Same delivery, but the log route differs so a
+        # group tap is distinguishable from a pasted link.
+        for prefix, route in (("f_", "deeplink"), ("g_", "group")):
+            if payload.startswith(prefix) and payload[2:].isdigit():
+                if await gate.blocked(client, message.from_user):
+                    return
+                await send_file(
+                    client,
+                    message.chat.id,
+                    int(payload[2:]),
+                    user=message.from_user,
+                    source=route,
+                )
                 return
-            await send_file(
-                client,
-                message.chat.id,
-                int(payload[2:]),
-                user=message.from_user,
-                source="deeplink",
-            )
-            return
 
         await message.reply_text(
             ui.start_text(message.from_user.mention),
