@@ -10,8 +10,12 @@ services:
       POSTGRES_PASSWORD: nowaybot
       POSTGRES_DB: nowaybot
     ports:
-      # Host 5433 to avoid clashing with a locally installed Postgres on 5432.
-      - "5433:5432"
+      # Host 5433 to avoid clashing with a locally installed Postgres on
+      # 5432, and bound to loopback: "5433:5432" would put this database
+      # on the public internet behind a default password. The services
+      # reach it over the compose network, not through this port - it
+      # exists only for psql and the migration/loadtest scripts.
+      - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -25,8 +29,9 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      # Host 6380 to avoid clashing with a locally running Redis on 6379.
-      - "6380:6379"
+      # Loopback for the same reason as Postgres: Redis has no password
+      # here, and an exposed Redis is trivially takeover-able.
+      - "127.0.0.1:6380:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -45,7 +50,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       HEALTH_PORT: 8081
     ports:
-      - "8081:8081"
+      # Loopback only. "8081:8081" publishes on every interface, which on
+      # a public VPS means anyone can poll it. To point an external
+      # uptime monitor at this, put it behind your reverse proxy rather
+      # than opening the port.
+      - "127.0.0.1:8081:8081"
     volumes:
       - ./sessions:/app/sessions
     depends_on:
@@ -73,7 +82,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       HEALTH_PORT: 8080
     ports:
-      - "8080:8080"
+      # Loopback only - see the note on the worker's port.
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./sessions:/app/sessions
     depends_on:
