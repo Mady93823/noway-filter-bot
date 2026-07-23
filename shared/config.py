@@ -77,6 +77,10 @@ class Settings(DbSettings):
     # Seconds the same fatal error stays deduped, so a crash loop DMs
     # admins once rather than thousands of times.
     alert_cooldown: int = Field(default=900, ge=30)
+    # How often the bot probes Postgres and Redis and DMs admins when
+    # either changes state. Edge-triggered, so this is only the detection
+    # lag, not an alert cadence.
+    watchdog_interval: int = Field(default=30, ge=5)
 
     @field_validator("source_channel_ids", "admin_ids", mode="before")
     @classmethod

@@ -13,6 +13,8 @@ from shared.alerts import notify_admins
 from shared.config import get_settings
 from shared.db.engine import dispose_engine, get_session_factory
 from shared.health import start_health_server
+from shared.logchannel import start_log_drainer, stop_log_drainer
+from shared.ratelimit import install_governor
 from shared.db.repos import progress as progress_repo
 from shared.telegram.client import create_client
 from worker.backfill import run_backfill
@@ -93,7 +95,12 @@ async def run() -> None:
     app = create_client("nowaybot-worker")
     register_live_handlers(app)
     await app.start()
+    # Same governor and log drainer as the bot: the worker's INDEXED and
+    # ERROR logs and its progress DMs share the one per-token budget, so
+    # a busy indexing run can never crowd out user deliveries.
+    install_governor(app)
     health = await start_health_server(settings.health_port, "worker")
+    start_log_drainer(app)
     logger.info("worker started")
     dispatcher = asyncio.create_task(job_dispatcher(app))
     try:
@@ -110,6 +117,7 @@ async def run() -> None:
         raise
     finally:
         dispatcher.cancel()
+        await stop_log_drainer()
         health.close()
         await app.stop()
         await dispose_engine()

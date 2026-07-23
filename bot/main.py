@@ -35,7 +35,10 @@ from shared.alerts import notify_admins
 from shared.config import get_settings
 from shared.db.engine import dispose_engine
 from shared.health import start_health_server
+from shared.logchannel import start_log_drainer, stop_log_drainer
+from shared.ratelimit import install_governor
 from shared.telegram.client import create_client
+from shared.watchdog import watchdog
 
 logger = logging.getLogger(__name__)
 
@@ -55,13 +58,26 @@ async def run() -> None:
     register_callback_handlers(app)
     register_search_handlers(app)
     await app.start()
+    # Route every outbound send through the shared rate governor before
+    # anything can send - deliveries, replies, logs and deletes all draw
+    # from the same per-token budget the worker also respects.
+    install_governor(app)
     # Warm the ban mirror before serving: a cold Redis must not mean a
     # window where every banned user is answered again.
     await guards.refresh_bans()
     health = await start_health_server(get_settings().health_port, "bot")
+    # Logs go through a bounded queue drained at the governor's pace, so a
+    # delivery storm can never flood the single log chat or backpressure
+    # the delivery that produced the log line.
+    start_log_drainer(app)
     # Group messages are temporary; the queue is in Redis, so this loop
     # also clears anything left pending by a previous run.
     sweeper_task = asyncio.create_task(sweeper(app))
+    # Watch Postgres and Redis; DM admins the moment either drops or
+    # recovers, so an outage is not something you find out from users.
+    watchdog_task = asyncio.create_task(
+        watchdog(app, get_settings().watchdog_interval)
+    )
     logger.info("bot started")
     try:
         await idle()
@@ -75,6 +91,8 @@ async def run() -> None:
         raise
     finally:
         sweeper_task.cancel()
+        watchdog_task.cancel()
+        await stop_log_drainer()
         health.close()
         await app.stop()
         await dispose_engine()

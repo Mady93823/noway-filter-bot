@@ -26,4 +26,9 @@ def create_client(session_name: str) -> Client:
         api_hash=settings.api_hash,
         bot_token=settings.bot_token,
         workdir=str(SESSIONS_DIR),
+        # The rate governor keeps us under Telegram's limits proactively,
+        # so FloodWait should be rare. When it does fire, let Pyrogram
+        # absorb waits up to a minute transparently rather than surfacing
+        # every brief hiccup as an exception the handlers must catch.
+        sleep_threshold=60,
     )
