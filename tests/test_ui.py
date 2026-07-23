@@ -103,6 +103,95 @@ def test_build_results_lists_titles_not_variants():
     assert all(len(b.text) <= ui.MAX_BUTTON_TEXT for b in flat)
 
 
+def test_close_matches_are_separated_from_real_ones():
+    """'game of thrones' must not list 'game over' as an equal match."""
+    page = _page()
+    mixed = SearchPage(
+        results=page.results,
+        total=6,
+        next_cursor=None,
+        qhash=page.qhash,
+        offset=0,
+        query=page.query,
+        strong_total=1,
+    )
+    text, keyboard = ui.build_results(mixed, page_size=10)
+    flat = [b for row in keyboard.inline_keyboard for b in row]
+
+    assert "<b>1</b> match" in text and "<b>5</b> close" in text
+    assert ui.CLOSE_MATCH_DIVIDER in text
+    # the divider lands between result 1 and result 2, in both surfaces
+    assert text.index("1️⃣") < text.index(ui.CLOSE_MATCH_DIVIDER) < text.index("2️⃣")
+    labels = [b.text for b in flat]
+    assert labels.index("🤔 Close matches below") == 1
+    # it is a label, not a control
+    divider = next(b for b in flat if b.text == "🤔 Close matches below")
+    assert divider.callback_data == ui.NOOP_CALLBACK
+
+
+def test_all_strong_results_get_no_divider():
+    page = _page()
+    strong = SearchPage(
+        results=page.results,
+        total=2,
+        next_cursor=None,
+        qhash=page.qhash,
+        offset=0,
+        query=page.query,
+        strong_total=2,
+    )
+    text, _ = ui.build_results(strong, page_size=10)
+    assert ui.CLOSE_MATCH_DIVIDER not in text
+    assert "close" not in text
+
+
+def test_all_close_results_say_so_without_a_divider():
+    """Nothing contained the query - the whole card is a guess, and says it."""
+    page = _page()
+    weak = SearchPage(
+        results=page.results,
+        total=2,
+        next_cursor=None,
+        qhash=page.qhash,
+        offset=0,
+        query=page.query,
+        strong_total=0,
+    )
+    text, _ = ui.build_results(weak, page_size=10)
+    assert "🤔 <b>2</b> close matches" in text
+    assert ui.CLOSE_MATCH_DIVIDER not in text
+
+
+def test_divider_falls_on_the_right_page():
+    """The boundary can sit anywhere, including past the first page."""
+    page = _page()
+    second = SearchPage(
+        results=page.results,
+        total=25,
+        next_cursor=None,
+        qhash=page.qhash,
+        offset=10,
+        query=page.query,
+        strong_total=11,
+    )
+    text, _ = ui.build_results(second, page_size=10)
+    # ids 0-10 are strong, so the line falls before the 2nd entry here
+    assert text.index("1️⃣") < text.index(ui.CLOSE_MATCH_DIVIDER) < text.index("2️⃣")
+
+    early = SearchPage(
+        results=page.results,
+        total=25,
+        next_cursor=None,
+        qhash=page.qhash,
+        offset=10,
+        query=page.query,
+        strong_total=3,
+    )
+    text, _ = ui.build_results(early, page_size=10)
+    # the line was drawn on an earlier page; this one is all close matches
+    assert ui.CLOSE_MATCH_DIVIDER not in text
+
+
 def test_build_title_lists_every_variant():
     result = _page().results[0]
     cursor = encode_cursor(query_hash("swati tamil"), 10)

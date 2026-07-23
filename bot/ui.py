@@ -73,6 +73,13 @@ _INDEX_MARKS = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣"
 # whole results message.
 NOOP_CALLBACK = "nop"
 
+# Separates titles that really contain the query from ones that merely
+# scored above the trigram floor. Without it a search for "game of
+# thrones" lists its one true hit and then "game over", "the hating game"
+# and "the key game" in the same voice, and the reader has no way to know
+# which is which.
+CLOSE_MATCH_DIVIDER = "<i>─────  🤔 close matches  ─────</i>"
+
 
 def format_size(size: int | None) -> str:
     if not size:
@@ -671,13 +678,33 @@ def build_results(page: SearchPage, page_size: int) -> tuple[str, InlineKeyboard
     if page.total == 1 and len(page.results) == 1:
         return build_title(page.results[0], cursor, show_back=False)
 
-    counter = f"✨ <b>{page.total}</b> match{'es' if page.total != 1 else ''}"
+    # Where the real matches stop. None (no ladder ran) means "all real".
+    strong = page.total if page.strong_total is None else page.strong_total
+    close = page.total - strong
+
+    if strong == 0:
+        counter = f"🤔 <b>{close}</b> close match{'es' if close != 1 else ''}"
+    else:
+        counter = f"✨ <b>{strong}</b> match{'es' if strong != 1 else ''}"
+        if close:
+            counter += f"   ·   🤔 <b>{close}</b> close"
     if pages > 1:
         counter += f"   ·   📄 page <b>{current}</b> of <b>{pages}</b>"
 
     rows: list[list[InlineKeyboardButton]] = []
     entries: list[str] = []
     for index, result in enumerate(page.results, start=1):
+        # Absolute rank, not the position on this page: the boundary can
+        # fall anywhere, including exactly on a page break.
+        if page.offset + index - 1 == strong and strong > 0:
+            entries.append(CLOSE_MATCH_DIVIDER)
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        "🤔 Close matches below", callback_data=NOOP_CALLBACK
+                    )
+                ]
+            )
         entries.append(_title_line(index, result))
         rows.append([_title_button(index, result, cursor)])
 

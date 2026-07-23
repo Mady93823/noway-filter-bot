@@ -52,6 +52,11 @@ class SearchPage:
     qhash: str | None = None
     offset: int = 0
     query: str = ""
+    # How many of `total` actually contain what the user typed. The rest
+    # only cleared the trigram floor - "game over" for "game of thrones" -
+    # and the card marks them off rather than passing them off as equals.
+    # None means "no ladder ran", and renders as one undivided list.
+    strong_total: int | None = None
 
 
 @dataclass(frozen=True)
@@ -145,7 +150,7 @@ async def search(
             # TTL passed - tell the caller to ask the user to search again
             # rather than guessing at a stale result set.
             return _EXPIRED_PAGE
-        normalized, title_ids = cached
+        normalized, title_ids, strong = cached
         parsed = parse_query(normalized)
     else:
         normalized = normalize_query(raw_query)
@@ -154,7 +159,7 @@ async def search(
             return _EMPTY_PAGE
         qhash = cache.query_hash(normalized)
         offset = 0
-        title_ids = await titles_repo.search_title_ids(
+        title_ids, strong = await titles_repo.search_title_ids(
             session,
             guess=parsed.title_guess,
             year=parsed.year,
@@ -165,7 +170,7 @@ async def search(
         )
         if not title_ids:
             return _EMPTY_PAGE
-        await cache.store_results(qhash, normalized, title_ids)
+        await cache.store_results(qhash, normalized, title_ids, strong)
 
     page_ids = title_ids[offset : offset + settings.search_page_size]
     titles = await titles_repo.load_titles_ordered(session, page_ids)
@@ -215,4 +220,5 @@ async def search(
         qhash=qhash,
         offset=offset,
         query=normalized,
+        strong_total=strong,
     )

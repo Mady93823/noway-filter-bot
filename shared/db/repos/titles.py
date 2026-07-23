@@ -82,7 +82,7 @@ async def search_title_ids(
     threshold: float,
     limit: int,
     season: int | None = None,
-) -> list[int]:
+) -> tuple[list[int], int]:
     """Deterministic search ladder (docs.md section 8), all index-backed:
 
     1. exact canonical match
@@ -91,8 +91,15 @@ async def search_title_ids(
        'sheep detective' finds 'the sheep detectives'
     3. whole-string trigram similarity - typo tolerance
 
-    Returns an ordered, de-duplicated id list - the thing cached in
-    Redis for pagination.
+    Returns (ordered de-duplicated ids, strong_count): the id list cached
+    in Redis for pagination, plus how many of those came from tiers 1-2.
+
+    Tier 3 is a different KIND of answer, not a worse-ranked one. "game of
+    thrones" finds its real hit, and then "the hating game", "game over"
+    and "the key game" all clear the trigram floor too. Listed together
+    undivided they read as equally good matches. Handing the count back
+    lets the caller draw the line exactly where relevance fell off,
+    instead of the reader having to guess.
     """
 
     def _apply_filters(query):
@@ -139,6 +146,9 @@ async def search_title_ids(
         )
         _absorb((await session.scalars(substring_query)).all())
 
+    # Everything found so far actually contains what the user typed.
+    strong = len(ids)
+
     if len(ids) < limit:
         await _align_trigram_threshold(session, threshold)
         similarity = func.similarity(Title.canonical_title, guess)
@@ -153,7 +163,7 @@ async def search_title_ids(
         )
         _absorb((await session.scalars(fuzzy_query)).all())
 
-    return ids[:limit]
+    return ids[:limit], min(strong, limit)
 
 
 async def nearest_titles(

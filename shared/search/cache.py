@@ -57,17 +57,28 @@ def decode_cursor(cursor: str) -> tuple[str, int] | None:
     return qhash, int(offset)
 
 
-async def store_results(qhash: str, normalized_query: str, title_ids: list[int]) -> None:
-    payload = json.dumps({"q": normalized_query, "ids": title_ids})
+async def store_results(
+    qhash: str, normalized_query: str, title_ids: list[int], strong: int
+) -> None:
+    """Cache one query's ordered ids plus where its strong matches end.
+
+    strong is cached rather than recomputed because page 2 never re-runs
+    the ladder - it slices this list. Without it a later page could not
+    tell a real match from a trigram near-miss.
+    """
+    payload = json.dumps({"q": normalized_query, "ids": title_ids, "s": strong})
     await get_redis().set(
         _KEY_PREFIX + qhash, payload, ex=get_settings().search_cache_ttl
     )
 
 
-async def load_results(qhash: str) -> tuple[str, list[int]] | None:
-    """Returns (normalized_query, title_ids) or None once the TTL expired."""
+async def load_results(qhash: str) -> tuple[str, list[int], int] | None:
+    """Returns (normalized_query, title_ids, strong) or None past the TTL."""
     raw = await get_redis().get(_KEY_PREFIX + qhash)
     if raw is None:
         return None
     data = json.loads(raw)
-    return data["q"], list(data["ids"])
+    ids = list(data["ids"])
+    # Entries written before "s" existed: treat every id as strong, which
+    # renders exactly as the old undivided list did.
+    return data["q"], ids, int(data.get("s", len(ids)))
