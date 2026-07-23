@@ -6,10 +6,20 @@ own button made the card unreadable and blew past what Telegram will
 draw. So level 1 lists titles (one button each, page_size rows), level 2
 opens a single title and lists its variants.
 
+Level 2 paginates too, for the same reason level 1 does: one fully
+indexed season is dozens of files, and dumping them all into a single
+keyboard is exactly the wall of buttons the two-level split existed to
+prevent. Audio and resolution chips sit above the list so narrowing is
+always cheaper than paging.
+
 Callback data stays tiny (Telegram caps it at 64 bytes):
     nav:<qhash>:<offset>                  turn a results page
     t:<title_id>:<qhash>:<offset>         open one title (offset = page to return to)
     t:<title_id>:<qhash>:<offset>:<lang>  same, audio-filtered ('hin', 'tam', ...)
+    t:<id>:<qhash>:<offset>:<lang>:<res>:<page>
+                                          full state; '-' means that
+                                          filter is off, page indexes the
+                                          title's own variant list
     get:<file_db_id>                      deliver one quality variant
     dym:<title_id>                        search a "did you mean" suggestion
     hlp / abt / hom                       start-menu navigation
@@ -27,6 +37,7 @@ from math import ceil
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from shared.parsing.languages import aliases_for
+from shared.parsing.quality import RESOLUTION_TOKENS
 from shared.search.cache import encode_cursor
 from shared.search.service import SearchPage, Suggestion, TitleResult
 
@@ -37,6 +48,21 @@ MAX_BUTTON_TEXT = 48
 MAX_LANGS_SHOWN = 3
 MAX_QUALITIES_SHOWN = 4
 CHIPS_PER_ROW = 3
+
+# A title is one row per FILE, and a fully indexed season is routinely 40+
+# files - which drew a keyboard nobody could use and, past 100 rows, one
+# Telegram refuses to draw at all. Variants paginate like the results list
+# does; a screenful at a time.
+VARIANTS_PER_PAGE = 8
+
+# Placeholder for "no filter" in a positional callback field. No language
+# code or resolution label is ever "-", so it can never collide.
+NO_FILTER = "-"
+
+# Canonical resolutions ("1080p", "720p", ...) as the parser emits them.
+# Chips filter on resolution alone so "1080p WEB-DL" and "1080p BluRay"
+# collapse into one chip instead of two near-identical ones.
+_RESOLUTIONS = frozenset(RESOLUTION_TOKENS.values())
 
 # Keycap digits for the results list. Telegram renders these as single
 # glyphs, which reads far better than "1." and survives truncation.
@@ -403,17 +429,75 @@ def _variant_has_language(variant, language: str) -> bool:
     return not variant.languages or language in variant.languages
 
 
+def resolution_of(quality: str | None) -> str | None:
+    """'1080p WEB-DL' -> '1080p'. None when the label carries no resolution."""
+    if not quality:
+        return None
+    return next((word for word in quality.split() if word in _RESOLUTIONS), None)
+
+
+def _variant_resolutions(result: TitleResult) -> list[str]:
+    """Resolutions present on this title's files, best first.
+
+    Descending because that is the order people scan for: someone opening
+    a title is far more often after the 1080p than the 360p.
+    """
+    seen = {
+        resolution
+        for resolution in (resolution_of(v.quality) for v in result.variants)
+        if resolution
+    }
+    return sorted(seen, key=lambda label: int(label.rstrip("pk")), reverse=True)
+
+
+def title_callback(
+    title_id: int,
+    cursor: str,
+    *,
+    language: str | None = None,
+    quality: str | None = None,
+    page: int = 0,
+) -> str:
+    """Callback data for one state of the title view.
+
+    Emits the shortest form that expresses the state, so the common cases
+    stay far inside Telegram's 64-byte budget and older 4-/5-field buttons
+    still round-trip:
+
+        t:<id>:<qhash>:<off>                      everything, first page
+        t:<id>:<qhash>:<off>:<lang>               one audio language
+        t:<id>:<qhash>:<off>:<lang>:<qual>:<page> full state, '-' = unset
+    """
+    code = short_code(language) if language else NO_FILTER
+    if quality is None and page == 0:
+        if language is None:
+            return f"t:{title_id}:{cursor}"
+        return f"t:{title_id}:{cursor}:{code}"
+    return f"t:{title_id}:{cursor}:{code}:{quality or NO_FILTER}:{page}"
+
+
+def _chip_rows(chips: list[InlineKeyboardButton]) -> list[list[InlineKeyboardButton]]:
+    return [chips[i : i + CHIPS_PER_ROW] for i in range(0, len(chips), CHIPS_PER_ROW)]
+
+
 def _language_chips(
-    result: TitleResult, cursor: str, active: str | None
+    result: TitleResult, cursor: str, active: str | None, quality: str | None
 ) -> list[list[InlineKeyboardButton]]:
-    """Audio filter row(s). Empty when the title has nothing to choose between."""
+    """Audio filter row(s). Empty when the title has nothing to choose between.
+
+    Every chip carries the quality filter through unchanged - switching
+    audio must not silently widen the resolution the user already picked -
+    and resets to the first page, because the old page number means
+    nothing once the list behind it changed.
+    """
     languages = _variant_languages(result)
     if len(languages) < 2:
         return []
 
     chips = [
         InlineKeyboardButton(
-            "🟢 All" if active is None else "🌐 All", callback_data=f"t:{result.title_id}:{cursor}"
+            "🟢 All" if active is None else "🌐 All",
+            callback_data=title_callback(result.title_id, cursor, quality=quality),
         )
     ]
     for language in languages:
@@ -421,10 +505,43 @@ def _language_chips(
         chips.append(
             InlineKeyboardButton(
                 _truncate(f"{mark}{language}"),
-                callback_data=f"t:{result.title_id}:{cursor}:{short_code(language)}",
+                callback_data=title_callback(
+                    result.title_id, cursor, language=language, quality=quality
+                ),
             )
         )
-    return [chips[i : i + CHIPS_PER_ROW] for i in range(0, len(chips), CHIPS_PER_ROW)]
+    return _chip_rows(chips)
+
+
+def _quality_chips(
+    result: TitleResult, cursor: str, active: str | None, language: str | None
+) -> list[list[InlineKeyboardButton]]:
+    """Resolution filter row(s), the counterpart to the audio chips.
+
+    This is the lever that makes a 60-file season usable: one tap turns
+    eight pages of mixed rips into the two the user actually wanted.
+    """
+    resolutions = _variant_resolutions(result)
+    if len(resolutions) < 2:
+        return []
+
+    chips = [
+        InlineKeyboardButton(
+            "🟢 Any" if active is None else "🎚 Any",
+            callback_data=title_callback(result.title_id, cursor, language=language),
+        )
+    ]
+    for resolution in resolutions:
+        mark = "🟢 " if resolution == active else ""
+        chips.append(
+            InlineKeyboardButton(
+                _truncate(f"{mark}{resolution}"),
+                callback_data=title_callback(
+                    result.title_id, cursor, language=language, quality=resolution
+                ),
+            )
+        )
+    return _chip_rows(chips)
 
 
 def _quality_line(variants) -> str:
@@ -442,8 +559,10 @@ def build_title(
     *,
     show_back: bool = True,
     language: str | None = None,
+    quality: str | None = None,
+    page: int = 0,
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """One title's file picker, optionally narrowed to one audio language.
+    """One title's file picker: filtered by audio/resolution, one page at a time.
 
     cursor is always the page this title was opened from - the chips need
     it even when there is no results list to go back to (a lone hit).
@@ -451,11 +570,18 @@ def build_title(
     variants = [
         variant
         for variant in result.variants
-        if language is None or _variant_has_language(variant, language)
+        if (language is None or _variant_has_language(variant, language))
+        and (quality is None or resolution_of(variant.quality) == quality)
     ]
-    if not variants:  # chip for a language no file actually carries
+    if not variants:  # a chip combination no file actually satisfies
         variants = list(result.variants)
-        language = None
+        language = quality = None
+
+    # Clamped rather than trusted: a stale keyboard can name a page that
+    # the current filter no longer has.
+    pages = max(1, ceil(len(variants) / VARIANTS_PER_PAGE))
+    page = min(max(page, 0), pages - 1)
+    shown = variants[page * VARIANTS_PER_PAGE : (page + 1) * VARIANTS_PER_PAGE]
 
     # Everything the user needs to choose, in one quoted block - Telegram
     # draws it with a coloured bar, which separates it from the buttons
@@ -463,12 +589,20 @@ def build_title(
     facts = []
     if result.languages:  # an "Audio: n/a" row is worse than no row
         facts.append(f"🗣 <b>Audio</b>   {escape(_languages_line(result.languages))}")
-    quality = _quality_line(variants)
-    if quality:
-        facts.append(f"🎚 <b>Quality</b>   {escape(quality)}")
+    quality_summary = _quality_line(variants)
+    if quality_summary:
+        facts.append(f"🎚 <b>Quality</b>   {escape(quality_summary)}")
     facts.append(f"💾 <b>Files</b>   {len(variants)}")
-    if language is not None:
-        facts.append(f"🔎 <b>Filter</b>   {escape(language)} audio")
+    active_filters = [
+        label
+        for label in (
+            f"{escape(language)} audio" if language else None,
+            escape(quality) if quality else None,
+        )
+        if label
+    ]
+    if active_filters:
+        facts.append(f"🔎 <b>Filter</b>   {'   ·   '.join(active_filters)}")
 
     lines = [
         f"🎬 {_headline(result)}",
@@ -481,9 +615,37 @@ def build_title(
     # When every listed variant carries the same audio, the block above
     # already said it - repeating it on each button only eats the space
     # the episode/quality labels need.
-    show_languages = len({variant.languages for variant in variants}) > 1
-    rows = _language_chips(result, cursor, language)
-    rows += [[_variant_button(variant, show_languages)] for variant in variants]
+    show_languages = len({variant.languages for variant in shown}) > 1
+    rows = _quality_chips(result, cursor, quality, language)
+    rows += _language_chips(result, cursor, language, quality)
+    rows += [[_variant_button(variant, show_languages)] for variant in shown]
+
+    if pages > 1:
+        nav: list[InlineKeyboardButton] = []
+        if page > 0:
+            nav.append(
+                InlineKeyboardButton(
+                    "⬅️",
+                    callback_data=title_callback(
+                        result.title_id, cursor,
+                        language=language, quality=quality, page=page - 1,
+                    ),
+                )
+            )
+        nav.append(
+            InlineKeyboardButton(f"📄 {page + 1} / {pages}", callback_data=NOOP_CALLBACK)
+        )
+        if page + 1 < pages:
+            nav.append(
+                InlineKeyboardButton(
+                    "➡️",
+                    callback_data=title_callback(
+                        result.title_id, cursor,
+                        language=language, quality=quality, page=page + 1,
+                    ),
+                )
+            )
+        rows.append(nav)
 
     footer: list[InlineKeyboardButton] = []
     if show_back and cursor:

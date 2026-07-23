@@ -100,12 +100,22 @@ def register_callback_handlers(app: Client) -> None:
     async def _on_title(client: Client, callback: CallbackQuery) -> None:
         if await _blocked(callback):
             return
-        # t:<title_id>:<qhash>:<offset>[:<lang_code>]
+        # t:<title_id>:<qhash>:<offset>[:<lang>[:<res>:<page>]] - see the
+        # grammar in bot.ui. The short forms are not just legacy: an
+        # unfiltered first page still emits them, so both stay live.
         parts = callback.data.split(":")
         title_id, cursor = int(parts[1]), f"{parts[2]}:{parts[3]}"
         # Chips carry a 3-letter code; resolve it back through the same
         # dictionary the indexer used, so an unknown code just means "all".
-        language = canonical_language(parts[4]) if len(parts) > 4 else None
+        language = (
+            canonical_language(parts[4])
+            if len(parts) > 4 and parts[4] != ui.NO_FILTER
+            else None
+        )
+        quality = parts[5] if len(parts) > 5 and parts[5] != ui.NO_FILTER else None
+        # A malformed page renders as page 1 rather than being refused -
+        # build_title clamps it against the real page count regardless.
+        variant_page = int(parts[6]) if len(parts) > 6 and parts[6].isdigit() else 0
 
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -116,7 +126,9 @@ def register_callback_handlers(app: Client) -> None:
             await callback.answer(ui.expired_text(), show_alert=True)
             return
 
-        text, keyboard = ui.build_title(result, cursor, language=language)
+        text, keyboard = ui.build_title(
+            result, cursor, language=language, quality=quality, page=variant_page
+        )
         try:
             await callback.edit_message_text(
                 text, parse_mode=ParseMode.HTML, reply_markup=keyboard

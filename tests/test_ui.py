@@ -125,7 +125,7 @@ def test_build_title_lists_every_variant():
     assert any("hin+eng" in b.text for b in flat)
 
 
-def test_single_audio_title_has_no_chips_and_no_button_codes():
+def test_single_audio_title_has_no_language_chips_and_no_button_codes():
     """One language across the files: nothing to filter, nothing to repeat."""
     result = TitleResult(
         title_id=3,
@@ -137,10 +137,13 @@ def test_single_audio_title_has_no_chips_and_no_button_codes():
             _variant(32, "720p", 900_000_000, ("tamil",)),
         ),
     )
-    _, keyboard = ui.build_title(result, encode_cursor(query_hash("solo"), 0))
+    cursor = encode_cursor(query_hash("solo"), 0)
+    _, keyboard = ui.build_title(result, cursor)
     flat = [b for row in keyboard.inline_keyboard for b in row]
 
-    assert not any(b.callback_data.startswith("t:") for b in flat)
+    # Resolution chips still appear - two resolutions IS a choice - but no
+    # audio chip, and no per-button audio code either.
+    assert not any(b.callback_data == f"t:3:{cursor}:tam" for b in flat)
     assert not any("tam" in b.text for b in flat)
 
 
@@ -156,23 +159,141 @@ def test_language_chips_filter_the_variant_list():
         if b.callback_data.startswith("t:")
     ]
     assert [b.callback_data for b in chips] == [
-        f"t:1:{cursor}",  # All
+        # resolution chips lead - narrowing by quality is the commoner ask
+        f"t:1:{cursor}",  # Any
+        f"t:1:{cursor}:-:720p:0",
+        f"t:1:{cursor}:-:480p:0",
+        f"t:1:{cursor}",  # All (audio)
         f"t:1:{cursor}:eng",
         f"t:1:{cursor}:hin",
     ]
-    assert chips[0].text == "🟢 All"  # unfiltered: All is the active chip
+    assert chips[0].text == "🟢 Any"  # unfiltered: Any/All are the active chips
+    assert chips[3].text == "🟢 All"
 
     text, keyboard = ui.build_title(result, cursor, language="hindi")
     data = [b.callback_data for row in keyboard.inline_keyboard for b in row]
     assert [d for d in data if d.startswith("get:")] == ["get:12"]
     assert "<b>Filter</b>   hindi audio" in text
-    active = next(
-        b
-        for row in keyboard.inline_keyboard
-        for b in row
-        if b.callback_data == f"t:1:{cursor}:hin"
+    # Matched on label, not callback: with hindi active the quality "Any"
+    # chip legitimately encodes the same state as the hindi audio chip
+    # (this language, no resolution filter), so both carry that callback.
+    texts = [b.text for row in keyboard.inline_keyboard for b in row]
+    assert "🟢 hindi" in texts
+    assert f"t:1:{cursor}:hin" in [
+        b.callback_data for row in keyboard.inline_keyboard for b in row
+    ]
+
+
+def test_quality_chips_filter_the_variant_list():
+    """One tap on a resolution is what makes a big title usable."""
+    result = _page().results[0]  # 480p + 720p WEB-DL
+    cursor = encode_cursor(query_hash("swati tamil"), 10)
+
+    text, keyboard = ui.build_title(result, cursor, quality="720p")
+    flat = [b for row in keyboard.inline_keyboard for b in row]
+    data = [b.callback_data for b in flat]
+
+    # "720p WEB-DL" matches the 720p chip: chips filter on resolution
+    # alone, so a rip source never splits one resolution into two chips.
+    assert [d for d in data if d.startswith("get:")] == ["get:12"]
+    assert "<b>Filter</b>   720p" in text
+    active = next(b for b in flat if b.callback_data == f"t:1:{cursor}:-:720p:0")
+    assert active.text == "🟢 720p"
+
+
+def test_chips_carry_each_others_filter_through():
+    """Switching audio must not silently widen the resolution already picked."""
+    result = _page().results[0]
+    cursor = encode_cursor(query_hash("swati tamil"), 10)
+
+    _, keyboard = ui.build_title(result, cursor, quality="720p")
+    data = [b.callback_data for row in keyboard.inline_keyboard for b in row]
+
+    # every audio chip keeps :720p
+    assert f"t:1:{cursor}:hin:720p:0" in data
+    assert f"t:1:{cursor}:eng:720p:0" in data
+    # and "All audio" drops only the audio filter
+    assert f"t:1:{cursor}:-:720p:0" in data
+
+
+def _season(count: int) -> TitleResult:
+    """A fully indexed season - the case that produced the wall of buttons."""
+    return TitleResult(
+        title_id=7,
+        display_title="Penguins Of Madagascar",
+        year=2008,
+        languages=("english",),
+        variants=tuple(
+            _variant(100 + n, "720p WEB-DL", 150_000_000, ("english",))
+            for n in range(count)
+        ),
+        season=2,
     )
-    assert active.text == "🟢 hindi"
+
+
+def test_variant_list_paginates():
+    cursor = encode_cursor(query_hash("penguins"), 0)
+    text, keyboard = ui.build_title(_season(20), cursor)
+    flat = [b for row in keyboard.inline_keyboard for b in row]
+    data = [b.callback_data for b in flat]
+
+    gets = [d for d in data if d.startswith("get:")]
+    assert len(gets) == ui.VARIANTS_PER_PAGE == 8
+    assert gets[0] == "get:100"
+    # the count in the card is the whole filtered set, not the page
+    assert "<b>Files</b>   20" in text
+    assert "📄 1 / 3" in [b.text for b in flat]
+    # first page: forward only, and the counter is inert
+    assert f"t:7:{cursor}:-:-:1" in data
+    assert ui.NOOP_CALLBACK in data
+    assert all(len(d.encode()) <= 64 for d in data)
+
+    _, keyboard = ui.build_title(_season(20), cursor, page=1)
+    data = [b.callback_data for row in keyboard.inline_keyboard for b in row]
+    assert [d for d in data if d.startswith("get:")][0] == "get:108"
+    # back to an unfiltered page 0 collapses to the short form - the
+    # encoder only spells out fields that carry state
+    assert f"t:7:{cursor}" in data and f"t:7:{cursor}:-:-:2" in data
+
+    # last page is short and has no forward arrow
+    _, keyboard = ui.build_title(_season(20), cursor, page=2)
+    data = [b.callback_data for row in keyboard.inline_keyboard for b in row]
+    assert len([d for d in data if d.startswith("get:")]) == 4
+    assert f"t:7:{cursor}:-:-:3" not in data
+
+
+def test_variant_page_is_clamped_not_trusted():
+    """A stale keyboard can name a page the current filter no longer has."""
+    cursor = encode_cursor(query_hash("penguins"), 0)
+    _, keyboard = ui.build_title(_season(20), cursor, page=99)
+    data = [b.callback_data for row in keyboard.inline_keyboard for b in row]
+    assert [d for d in data if d.startswith("get:")] == [
+        f"get:{116 + n}" for n in range(4)
+    ]
+
+
+def test_short_title_has_no_variant_pager():
+    cursor = encode_cursor(query_hash("penguins"), 0)
+    _, keyboard = ui.build_title(_season(3), cursor)
+    flat = [b for row in keyboard.inline_keyboard for b in row]
+    assert not any("📄" in b.text for b in flat)
+
+
+def test_impossible_filter_falls_back_to_everything():
+    """A chip combination no file satisfies shows the full list, not a blank."""
+    result = _page().results[0]
+    cursor = encode_cursor(query_hash("swati tamil"), 10)
+    text, keyboard = ui.build_title(result, cursor, quality="2160p")
+    data = [b.callback_data for row in keyboard.inline_keyboard for b in row]
+
+    assert [d for d in data if d.startswith("get:")] == ["get:11", "get:12"]
+    assert "<b>Filter</b>" not in text
+
+
+def test_resolution_of_ignores_rip_source():
+    assert ui.resolution_of("1080p WEB-DL") == "1080p"
+    assert ui.resolution_of("BluRay") is None
+    assert ui.resolution_of(None) is None
 
 
 def test_unknown_audio_variant_survives_a_language_filter():
