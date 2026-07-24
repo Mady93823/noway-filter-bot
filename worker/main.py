@@ -96,8 +96,13 @@ async def _run_reparse(client: Client, job: dict) -> None:
     async def on_progress(
         phase: str, done: int, total: int, stats: dict[str, int]
     ) -> None:
+        # Merged, not publish(total=total, **stats): stats carries its own
+        # "total" key, and passing both is a TypeError that silently costs
+        # the entire progress display while the run itself carries on.
+        payload = dict(stats)
+        payload.update(phase=phase, done=done, total=total)
         try:
-            await reparse_state.publish(phase=phase, done=done, total=total, **stats)
+            await reparse_state.publish(**payload)
         except Exception as exc:
             # Losing the progress display must never abort the re-parse
             # itself - the work is the point, the percentage is not.
@@ -135,6 +140,27 @@ async def _run_reparse(client: Client, job: dict) -> None:
         f"Display names repaired: {stats['renamed']:,}\n"
         f"Titles: {stats['titles_before']:,} → {stats['titles_after']:,} "
         f"({stats['orphans']:,} empty ones removed)",
+    )
+
+
+async def _reconcile_reparse() -> None:
+    """A run still marked RUNNING at startup died with the last worker.
+
+    Nothing else would ever clear it - the status lives in Redis, so it
+    outlives the process that owned it, and a stale RUNNING makes every
+    future /reparse refuse to start. The committed batches stay committed;
+    re-queuing simply re-parses rows that are already correct, which costs
+    time and changes nothing.
+    """
+    state = await reparse_state.read()
+    if state["status"] != reparse_state.RUNNING:
+        return
+    logger.warning("clearing re-parse left RUNNING by a previous worker")
+    # No stats argument: publish only writes the fields it is given, so the
+    # counters the run had reached stay visible in /stats.
+    await reparse_state.finish(
+        reparse_state.FAILED,
+        error="worker restarted mid-run - send /reparse again to finish it",
     )
 
 
@@ -181,6 +207,7 @@ async def run() -> None:
     health = await start_health_server(settings.health_port, "worker")
     start_log_drainer(app)
     logger.info("worker started")
+    await _reconcile_reparse()
     dispatcher = asyncio.create_task(job_dispatcher(app))
     reparser = asyncio.create_task(reparse_dispatcher(app))
     try:
