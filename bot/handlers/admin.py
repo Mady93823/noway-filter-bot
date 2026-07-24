@@ -10,6 +10,7 @@ Both just upsert an index_progress row - the worker does everything else.
 import logging
 import platform
 import time
+from html import escape
 from pathlib import Path
 
 import psutil
@@ -31,6 +32,7 @@ from shared.db.repos import progress as progress_repo
 from shared.db.repos import stats as stats_repo
 from shared.db.repos import users as users_repo
 from shared.redis_client import get_redis
+from shared import reparse_state
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +43,11 @@ _HELP_TEXT = (
     "▫️ <b>Forward a channel post</b> — start indexing that channel up to "
     "the forwarded message\n"
     "▫️ <code>/index &lt;channel_id&gt; &lt;last_message_id&gt;</code> — same, by hand\n"
-    "▫️ <code>/stats</code> — index counts, DB/Redis size, system specs\n"
+    "▫️ <code>/stats</code> — index counts, DB/Redis size, system specs, and "
+    "live re-parse progress\n"
+    "▫️ <code>/reparse</code> — re-read every indexed filename with the "
+    "current parser (fixes wrong titles; deletes nothing). "
+    "<code>/reparse cancel</code> stops it\n"
     "▫️ <code>/clear_index</code> — wipe ALL indexed titles/files (asks to confirm)\n"
     "▫️ <code>/help</code> — this list\n\n"
     "🔨 <b>Moderation</b>\n"
@@ -74,6 +80,84 @@ _HELP_TEXT = (
     "👥 <b>User side</b>: /start greeting, plain-text search in PM and groups, "
     "tap a title then a file for delivery."
 )
+
+
+def _duration(seconds: float) -> str:
+    seconds = int(max(0, seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60}s"
+    return f"{seconds // 3600}h {seconds % 3600 // 60}m"
+
+
+_PHASE_LABELS = {
+    "files": "re-parsing files",
+    "titles": "repairing display names",
+    "cleanup": "removing empty titles",
+}
+
+
+def _reparse_lines(state: dict) -> list[str]:
+    """The /stats block for a re-parse. Empty when one has never run.
+
+    The percentage is the whole point of this section: a run over lakhs
+    of files takes long enough that without it an admin cannot tell a
+    working job from a hung one, and kills it.
+    """
+    status = state["status"]
+    if status == reparse_state.IDLE:
+        return []
+
+    tag = " <i>(dry run)</i>" if state["dry_run"] else ""
+    lines = ["", f"🔁 <b>Re-parse</b>{tag}"]
+
+    if status == reparse_state.REQUESTED:
+        lines.append("   ⏳ Queued — the worker picks it up within a minute.")
+        return lines
+
+    if status == reparse_state.RUNNING:
+        done, total = state["done"], state["total"]
+        percent = (done / total * 100) if total else 0.0
+        filled = int(percent // 10)
+        bar = "█" * filled + "░" * (10 - filled)
+        elapsed = time.time() - (state["started_at"] or time.time())
+        lines.append(
+            f"   {bar} <b>{percent:.1f}%</b>"
+            + ("  ·  stopping…" if state["cancel"] else "")
+        )
+        lines.append(
+            f"   {_PHASE_LABELS.get(state['phase'], state['phase'] or '…')}: "
+            f"<b>{done:,}</b> / {total:,}"
+        )
+        # Rate comes from this run only, so an ETA reflects the speed the
+        # job is actually managing rather than an average of past runs.
+        rate = done / elapsed if elapsed > 0 and done else 0.0
+        eta = f" · ~{_duration((total - done) / rate)} left" if rate else ""
+        lines.append(f"   ⏱ {_duration(elapsed)} elapsed{eta}")
+        lines.append(f"   🔀 Moved so far: <b>{state['moved']:,}</b>")
+        return lines
+
+    verdict = {
+        reparse_state.DONE: "✅ Finished",
+        reparse_state.CANCELLED: "🛑 Stopped by admin",
+        reparse_state.FAILED: "💥 Failed",
+    }.get(status, status)
+    ago = time.time() - (state["finished_at"] or time.time())
+    lines.append(f"   {verdict} — {_duration(ago)} ago")
+    lines.append(
+        f"   📁 Files: <b>{state['files']:,}</b> · moved <b>{state['moved']:,}</b> "
+        f"· names repaired <b>{state['renamed']:,}</b>"
+    )
+    lines.append(
+        f"   🎬 Titles: {state['titles_before']:,} → <b>{state['titles_after']:,}</b> "
+        f"({state['orphans']:,} empty removed)"
+    )
+    if state["error"]:
+        # An exception message is arbitrary text - a stray "<" in it would
+        # otherwise break the whole /stats message, not just this line.
+        lines.append(f"   ⚠️ <code>{escape(state['error'])}</code>")
+    return lines
 
 
 def _uptime() -> str:
@@ -133,6 +217,7 @@ async def _stats_text() -> str:
             )
     else:
         lines.append("   • none yet")
+    lines += _reparse_lines(await reparse_state.read())
     lines += [
         "",
         "🖥 <b>System</b>",
@@ -216,6 +301,85 @@ def register_admin_handlers(app: Client) -> None:
     @app.on_message(admin_pm & filters.command("stats"))
     async def _on_stats(client: Client, message: Message) -> None:
         await message.reply_text(await _stats_text(), parse_mode=ParseMode.HTML)
+
+    @app.on_message(admin_pm & filters.command("reparse"))
+    async def _on_reparse(client: Client, message: Message) -> None:
+        argument = (message.text or "").split()[1:2]
+        if argument and argument[0].lower() in ("cancel", "stop"):
+            stopped = await reparse_state.cancel()
+            await message.reply_text(
+                "🛑 Stopping after the current batch. Everything already "
+                "committed stays — nothing is rolled back."
+                if stopped
+                else "Nothing to stop: no re-parse is queued or running."
+            )
+            return
+
+        state = await reparse_state.read()
+        if state["status"] in reparse_state.ACTIVE:
+            queued_or_running = (
+                "queued" if state["status"] == reparse_state.REQUESTED else "running"
+            )
+            await message.reply_text(
+                f"A re-parse is already {queued_or_running}. Watch it with "
+                "/stats, or send /reparse cancel to stop it."
+            )
+            return
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            counts = await stats_repo.index_counts(session)
+        await message.reply_text(
+            "🔁 <b>Re-parse the whole index?</b>\n\n"
+            f"Re-reads the stored filename and caption of all "
+            f"<b>{counts['files']:,}</b> files with the current parser, "
+            "regroups them under the right titles, and repairs display "
+            "names that a fuzzy match corrupted.\n\n"
+            "<blockquote>✅ No file is ever deleted and no Telegram file id "
+            "is touched — nothing becomes unsendable.\n"
+            "🗑 Titles left with <b>zero</b> files are removed.\n"
+            "⏳ Expect several minutes; watch the percentage in /stats and "
+            "stop it any time with <code>/reparse cancel</code>.</blockquote>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton("🔁 Run it", callback_data="rp:go"),
+                        InlineKeyboardButton("🧪 Dry run", callback_data="rp:dry"),
+                    ],
+                    [InlineKeyboardButton("✖️ Cancel", callback_data="rp:no")],
+                ]
+            ),
+        )
+
+    @app.on_callback_query(
+        filters.regex(r"^rp:(go|dry|no)$") & filters.user(admin_ids)
+    )
+    async def _on_reparse_confirm(client: Client, callback: CallbackQuery) -> None:
+        if callback.data == "rp:no":
+            await callback.edit_message_text("Cancelled. Index untouched. ✅")
+            await callback.answer()
+            return
+
+        dry_run = callback.data == "rp:dry"
+        queued = await reparse_state.request(dry_run, callback.from_user.id)
+        if not queued:
+            await callback.edit_message_text(
+                "A re-parse is already running. Watch it with /stats."
+            )
+            await callback.answer()
+            return
+        logger.info(
+            "reparse queued by admin %s (dry_run=%s)", callback.from_user.id, dry_run
+        )
+        await callback.edit_message_text(
+            ("🧪 <b>Dry run queued.</b> Reports what would change and writes "
+             "nothing.\n\n" if dry_run else "🔁 <b>Re-parse queued.</b>\n\n")
+            + "The worker starts it within a minute. Send /stats to watch the "
+            "percentage; <code>/reparse cancel</code> stops it.",
+            parse_mode=ParseMode.HTML,
+        )
+        await callback.answer("Queued")
 
     @app.on_message(admin_pm & filters.command("clear_index"))
     async def _on_clear_index(client: Client, message: Message) -> None:

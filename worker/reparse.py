@@ -8,6 +8,10 @@ indexed file needs to stay sendable is at risk.
     uv run python -m worker.reparse            # apply
     uv run python -m worker.reparse --dry-run  # report only
 
+Admins normally run it from the bot instead (/reparse), which drives this
+same function from inside the worker and reports progress in /stats - a
+run over lakhs of files takes long enough that a silent CLI looks hung.
+
 Titles left with no files afterwards are deleted, so the identity split
 (one row per season) actually shows up instead of leaving empty shells.
 
@@ -20,6 +24,7 @@ even once the parser stops producing it.
 import argparse
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 
 from sqlalchemy import delete, func, select
 
@@ -32,8 +37,18 @@ logger = logging.getLogger(__name__)
 
 BATCH = 500
 
+# (phase, done, total, stats) - called once per committed batch, so what a
+# caller publishes is always a state the database has actually reached.
+ProgressHook = Callable[[str, int, int, dict[str, int]], Awaitable[None]]
+CancelHook = Callable[[], Awaitable[bool]]
 
-async def _repair_display_titles(session_factory, dry_run: bool) -> int:
+
+async def _repair_display_titles(
+    session_factory,
+    dry_run: bool,
+    on_progress: ProgressHook | None = None,
+    stats: dict[str, int] | None = None,
+) -> int:
     """Reset display titles that no longer spell out their own canonical.
 
     The rule mirrors the guard now in titles_repo.merge_metadata: a
@@ -44,7 +59,10 @@ async def _repair_display_titles(session_factory, dry_run: bool) -> int:
     title-cased and canonical is not.
     """
     renamed = 0
+    seen = 0
     last_id = 0
+    async with session_factory() as session:
+        total = await session.scalar(select(func.count()).select_from(Title)) or 0
     while True:
         async with session_factory() as session:
             async with session.begin():
@@ -60,6 +78,7 @@ async def _repair_display_titles(session_factory, dry_run: bool) -> int:
                     return renamed
                 for title in titles:
                     last_id = title.id
+                    seen += 1
                     if title.display_title.lower().startswith(
                         title.canonical_title.lower()
                     ):
@@ -69,9 +88,17 @@ async def _repair_display_titles(session_factory, dry_run: bool) -> int:
                         title.display_title = title.canonical_title.title()
                 if dry_run:
                     await session.rollback()
+        if on_progress is not None:
+            merged = dict(stats or {})
+            merged["renamed"] = renamed
+            await on_progress("titles", seen, total, merged)
 
 
-async def reparse(dry_run: bool = False) -> dict[str, int]:
+async def reparse(
+    dry_run: bool = False,
+    on_progress: ProgressHook | None = None,
+    should_cancel: CancelHook | None = None,
+) -> dict[str, int]:
     session_factory = get_session_factory()
     stats = {
         "files": 0,
@@ -80,12 +107,23 @@ async def reparse(dry_run: bool = False) -> dict[str, int]:
         "titles_after": 0,
         "orphans": 0,
         "renamed": 0,
+        "total": 0,
+        "cancelled": 0,
     }
 
     async with session_factory() as session:
         stats["titles_before"] = await session.scalar(
             select(func.count()).select_from(Title)
         )
+        # Counted up front purely so progress can be a percentage. An
+        # exact count of a large table costs one seq scan, once - cheap
+        # next to the per-file work that follows.
+        stats["total"] = (
+            await session.scalar(select(func.count()).select_from(File)) or 0
+        )
+
+    if on_progress is not None:
+        await on_progress("files", 0, stats["total"], stats)
 
     last_id = 0
     while True:
@@ -120,8 +158,27 @@ async def reparse(dry_run: bool = False) -> dict[str, int]:
                     # Nothing may persist on a dry run - not even the title
                     # rows resolve_title created while probing.
                     await session.rollback()
+        # Both hooks run between batches, never inside the transaction: the
+        # batch is already committed, so what is reported is durable and a
+        # cancel stops on a clean boundary rather than tearing one open.
+        if on_progress is not None:
+            await on_progress("files", stats["files"], stats["total"], stats)
+        if should_cancel is not None and await should_cancel():
+            stats["cancelled"] = 1
+            logger.info("reparse cancelled after %s files", stats["files"])
+            break
 
-    stats["renamed"] = await _repair_display_titles(session_factory, dry_run)
+    if not stats["cancelled"]:
+        # Skipped on cancel: it is a second full-table pass, and an admin
+        # who just asked for a stop should get one. The orphan sweep below
+        # still runs - a title with zero files left is junk either way, and
+        # leaving it behind is exactly the stale name the re-parse was for.
+        stats["renamed"] = await _repair_display_titles(
+            session_factory, dry_run, on_progress, stats
+        )
+
+    if on_progress is not None:
+        await on_progress("cleanup", 0, 0, stats)
 
     async with session_factory() as session:
         async with session.begin():

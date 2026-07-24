@@ -16,9 +16,11 @@ from shared.health import start_health_server
 from shared.logchannel import start_log_drainer, stop_log_drainer
 from shared.ratelimit import install_governor
 from shared.db.repos import progress as progress_repo
+from shared import reparse_state
 from shared.telegram.client import create_client
 from worker.backfill import run_backfill
 from worker.live import register_live_handlers
+from worker.reparse import reparse
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,83 @@ async def job_dispatcher(client: Client) -> None:
         await asyncio.sleep(interval)
 
 
+async def _run_reparse(client: Client, job: dict) -> None:
+    """Run one claimed re-parse, reporting every batch to Redis."""
+    dry_run = job["dry_run"]
+    logger.info("reparse starting (dry_run=%s)", dry_run)
+
+    async def on_progress(
+        phase: str, done: int, total: int, stats: dict[str, int]
+    ) -> None:
+        try:
+            await reparse_state.publish(phase=phase, done=done, total=total, **stats)
+        except Exception as exc:
+            # Losing the progress display must never abort the re-parse
+            # itself - the work is the point, the percentage is not.
+            logger.warning("reparse progress publish failed: %s", exc)
+
+    try:
+        stats = await reparse(
+            dry_run=dry_run,
+            on_progress=on_progress,
+            should_cancel=reparse_state.is_cancelled,
+        )
+    except Exception as exc:
+        logger.exception("reparse failed")
+        await reparse_state.finish(
+            reparse_state.FAILED, error=f"{type(exc).__name__}: {exc}"
+        )
+        await notify_admins(
+            client,
+            f"💥 Re-parse failed.\n{type(exc).__name__}: {exc}",
+            dedupe_key="reparse",
+        )
+        return
+
+    cancelled = bool(stats.get("cancelled"))
+    await reparse_state.finish(
+        reparse_state.CANCELLED if cancelled else reparse_state.DONE, stats
+    )
+    prefix = "DRY RUN — " if dry_run else ""
+    headline = "🛑 Re-parse stopped" if cancelled else "✅ Re-parse finished"
+    await notify_admins(
+        client,
+        f"{prefix}{headline}\n"
+        f"Files re-parsed: {stats['files']:,} of {stats['total']:,}\n"
+        f"Moved to another title: {stats['moved']:,}\n"
+        f"Display names repaired: {stats['renamed']:,}\n"
+        f"Titles: {stats['titles_before']:,} → {stats['titles_after']:,} "
+        f"({stats['orphans']:,} empty ones removed)",
+    )
+
+
+async def reparse_dispatcher(client: Client) -> None:
+    """Poll Redis for a queued re-parse and run at most one at a time.
+
+    A re-parse rewrites every file row, so it runs here and not in the
+    bot: the bot only writes the request and reads the progress. Awaiting
+    the run inline is what keeps it to one at a time - the poll cannot
+    come round again while a job is still going.
+    """
+    interval = get_settings().job_poll_interval
+    while True:
+        try:
+            job = await reparse_state.claim()
+            if job is not None:
+                await _run_reparse(client, job)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("reparse dispatcher iteration failed")
+            await notify_admins(
+                client,
+                "⚠️ Worker re-parse dispatcher error.\n"
+                f"{type(exc).__name__}: {exc}",
+                dedupe_key="reparse-dispatcher",
+            )
+        await asyncio.sleep(interval)
+
+
 async def run() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -103,6 +182,7 @@ async def run() -> None:
     start_log_drainer(app)
     logger.info("worker started")
     dispatcher = asyncio.create_task(job_dispatcher(app))
+    reparser = asyncio.create_task(reparse_dispatcher(app))
     try:
         await idle()
     except Exception as exc:
@@ -117,6 +197,7 @@ async def run() -> None:
         raise
     finally:
         dispatcher.cancel()
+        reparser.cancel()
         await stop_log_drainer()
         health.close()
         await app.stop()
