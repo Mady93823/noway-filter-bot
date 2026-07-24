@@ -82,6 +82,7 @@ async def search_title_ids(
     threshold: float,
     limit: int,
     season: int | None = None,
+    close_limit: int = 5,
 ) -> tuple[list[int], int]:
     """Deterministic search ladder (docs.md section 8), all index-backed:
 
@@ -89,17 +90,17 @@ async def search_title_ids(
     2. substring containment (the trigram GIN index accelerates ILIKE) -
        partial queries work: 'wednesday' finds every Wednesday pack and
        'sheep detective' finds 'the sheep detectives'
-    3. whole-string trigram similarity - typo tolerance
+    3. whole-string trigram similarity - typo tolerance, LAST RESORT ONLY
 
     Returns (ordered de-duplicated ids, strong_count): the id list cached
     in Redis for pagination, plus how many of those came from tiers 1-2.
 
     Tier 3 is a different KIND of answer, not a worse-ranked one. "game of
     thrones" finds its real hit, and then "the hating game", "game over"
-    and "the key game" all clear the trigram floor too. Listed together
-    undivided they read as equally good matches. Handing the count back
-    lets the caller draw the line exactly where relevance fell off,
-    instead of the reader having to guess.
+    and "the key game" all clear the trigram floor too. Appended to a real
+    hit they read as more of the same, so they only run when tiers 1-2
+    found nothing at all - and then only close_limit of them, because the
+    tail of a trigram scan is noise at any length.
     """
 
     def _apply_filters(query):
@@ -149,7 +150,10 @@ async def search_title_ids(
     # Everything found so far actually contains what the user typed.
     strong = len(ids)
 
-    if len(ids) < limit:
+    # `not ids`, not `len(ids) < limit`: with limit at search_max_results
+    # the old guard was true on almost every query, so the "fallback" tier
+    # ran nearly always and padded one real hit with five unrelated films.
+    if not ids and close_limit > 0:
         await _align_trigram_threshold(session, threshold)
         similarity = func.similarity(Title.canonical_title, guess)
         fuzzy_query = (
@@ -159,7 +163,7 @@ async def search_title_ids(
                 .where(similarity > threshold)
             )
             .order_by(similarity.desc(), Title.id)
-            .limit(limit)
+            .limit(close_limit)
         )
         _absorb((await session.scalars(fuzzy_query)).all())
 
@@ -251,8 +255,8 @@ async def merge_metadata(
     """Enrich an existing title from a newly indexed file (docs.md section 7).
 
     Languages are unioned; the display title upgrades to the most complete
-    string seen. Year is deliberately never rewritten here - flipping a
-    NULL year could collide with another (canonical, year) row.
+    spelling of the same name. Year is deliberately never rewritten here -
+    flipping a NULL year could collide with another (canonical, year) row.
     """
     merged = list(title.languages)
     for language in languages:
@@ -260,5 +264,15 @@ async def merge_metadata(
             merged.append(language)
     if merged != list(title.languages):
         title.languages = merged
-    if display_candidate and len(display_candidate) > len(title.display_title):
+    if (
+        display_candidate
+        and len(display_candidate) > len(title.display_title)
+        # Only a longer spelling of the SAME name may win. Without this a
+        # fuzzy match promotes its own debris into the identity: a file
+        # parsed as "ep 10 bang bang" is longer than "Bang Bang", so one
+        # bad filename renamed the row and every user saw "Ep 10 Bang
+        # Bang". A real completion ("Swat" -> "Swati") still starts with
+        # what it replaces; prepended junk never does.
+        and display_candidate.lower().startswith(title.display_title.lower())
+    ):
         title.display_title = display_candidate

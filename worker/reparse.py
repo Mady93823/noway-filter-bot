@@ -10,6 +10,11 @@ indexed file needs to stay sendable is at risk.
 
 Titles left with no files afterwards are deleted, so the identity split
 (one row per season) actually shows up instead of leaving empty shells.
+
+A final pass repairs display titles that a fuzzy match captured. Re-parsing
+alone cannot undo those: merge_metadata only ever lengthens a display
+title, so a row renamed to "Ep 10 Bang Bang" would keep that name forever
+even once the parser stops producing it.
 """
 
 import argparse
@@ -28,9 +33,54 @@ logger = logging.getLogger(__name__)
 BATCH = 500
 
 
+async def _repair_display_titles(session_factory, dry_run: bool) -> int:
+    """Reset display titles that no longer spell out their own canonical.
+
+    The rule mirrors the guard now in titles_repo.merge_metadata: a
+    display title may only be a longer spelling of the canonical text, so
+    "swat" -> "Swati" is legitimate and survives, while "bang bang" ->
+    "Ep 10 Bang Bang" is debris a fuzzy match dragged in and is reset to
+    the canonical name. Comparison is case-insensitive because display is
+    title-cased and canonical is not.
+    """
+    renamed = 0
+    last_id = 0
+    while True:
+        async with session_factory() as session:
+            async with session.begin():
+                titles = (
+                    await session.scalars(
+                        select(Title)
+                        .where(Title.id > last_id)
+                        .order_by(Title.id)
+                        .limit(BATCH)
+                    )
+                ).all()
+                if not titles:
+                    return renamed
+                for title in titles:
+                    last_id = title.id
+                    if title.display_title.lower().startswith(
+                        title.canonical_title.lower()
+                    ):
+                        continue
+                    renamed += 1
+                    if not dry_run:
+                        title.display_title = title.canonical_title.title()
+                if dry_run:
+                    await session.rollback()
+
+
 async def reparse(dry_run: bool = False) -> dict[str, int]:
     session_factory = get_session_factory()
-    stats = {"files": 0, "moved": 0, "titles_before": 0, "titles_after": 0, "orphans": 0}
+    stats = {
+        "files": 0,
+        "moved": 0,
+        "titles_before": 0,
+        "titles_after": 0,
+        "orphans": 0,
+        "renamed": 0,
+    }
 
     async with session_factory() as session:
         stats["titles_before"] = await session.scalar(
@@ -71,6 +121,8 @@ async def reparse(dry_run: bool = False) -> dict[str, int]:
                     # rows resolve_title created while probing.
                     await session.rollback()
 
+    stats["renamed"] = await _repair_display_titles(session_factory, dry_run)
+
     async with session_factory() as session:
         async with session.begin():
             orphan_ids = (
@@ -100,7 +152,8 @@ async def main() -> None:
     print(
         f"{'DRY RUN - ' if args.dry_run else ''}"
         f"files reparsed: {stats['files']} · moved to another title: "
-        f"{stats['moved']} · titles {stats['titles_before']} -> "
+        f"{stats['moved']} · display titles repaired: {stats['renamed']} · "
+        f"titles {stats['titles_before']} -> "
         f"{stats['titles_after']} (orphans removed: {stats['orphans']})"
     )
 

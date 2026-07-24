@@ -229,3 +229,27 @@ def test_multipart_split_is_not_a_season_part():
 def test_movies_never_get_a_season():
     parsed = parse_media("Swati.1997.Tamil.1080p.BluRay.x264.mkv")
     assert parsed.season is None and parsed.episodes is None
+
+
+def test_spelled_out_episode_marker_never_reaches_the_title():
+    # "Ep 10" splits into two tokens, so the fused-only regex missed it
+    # and both leaked into the title - which is how a real row ended up
+    # displayed as "Ep 10 Bang Bang".
+    parsed = parse_media("Ep 10 Bang Bang (2020) 1080p HDRip Tamil.mkv")
+    assert parsed.title_guess == "bang bang"
+    assert parsed.year == 2020
+    assert parsed.episodes == "E10"
+
+
+def test_spelled_out_episode_range():
+    parsed = parse_media("Wednesday.S01.Episode 01 - 04.720p.WEB-DL.mkv")
+    assert parsed.title_guess == "wednesday"
+    assert (parsed.season, parsed.episodes) == (1, "E01-E04")
+
+
+def test_bare_ep_word_without_a_number_stays_in_the_title():
+    # No number to claim, so "ep" is an ordinary word here. The marker
+    # rule must not eat title text on the strength of one token.
+    parsed = parse_media("Ep Of The Dead.2019.1080p.mkv")
+    assert parsed.title_guess == "ep of the dead"
+    assert parsed.episodes is None

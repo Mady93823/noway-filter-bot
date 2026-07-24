@@ -90,7 +90,7 @@ def test_build_results_lists_titles_not_variants():
     assert "x" in data
     # the page counter is a label - it must NOT reuse the close token,
     # or tapping it would delete the results it is describing
-    assert "📄 2 / 3" in [b.text for b in flat]
+    assert "📄  2 / 3" in [b.text for b in flat]
     assert ui.NOOP_CALLBACK in data and ui.NOOP_CALLBACK != "x"
     # title buttons carry the keycap that indexes the text list
     assert [b.text for b in flat if b.callback_data.startswith("t:")] == [
@@ -123,9 +123,9 @@ def test_close_matches_are_separated_from_real_ones():
     # the divider lands between result 1 and result 2, in both surfaces
     assert text.index("1️⃣") < text.index(ui.CLOSE_MATCH_DIVIDER) < text.index("2️⃣")
     labels = [b.text for b in flat]
-    assert labels.index("🤔 Close matches below") == 1
+    assert labels.index("🤔  ·  close names below  ·  🤔") == 1
     # it is a label, not a control
-    divider = next(b for b in flat if b.text == "🤔 Close matches below")
+    divider = next(b for b in flat if b.text == "🤔  ·  close names below  ·  🤔")
     assert divider.callback_data == ui.NOOP_CALLBACK
 
 
@@ -158,7 +158,10 @@ def test_all_close_results_say_so_without_a_divider():
         strong_total=0,
     )
     text, _ = ui.build_results(weak, page_size=10)
-    assert "🤔 <b>2</b> close matches" in text
+    # "No exact match" leads: these only appear when nothing contained the
+    # query, so a count alone would present them as if they were results.
+    assert "🤔 <b>No exact match</b>" in text
+    assert "2 close names" in text
     assert ui.CLOSE_MATCH_DIVIDER not in text
 
 
@@ -331,7 +334,7 @@ def test_variant_list_paginates():
     assert gets[0] == "get:100"
     # the count in the card is the whole filtered set, not the page
     assert "<b>Files</b>   20" in text
-    assert "📄 1 / 3" in [b.text for b in flat]
+    assert "📄  1 / 3" in [b.text for b in flat]
     # first page: forward only, and the counter is inert
     assert f"t:7:{cursor}:-:-:1" in data
     assert ui.NOOP_CALLBACK in data

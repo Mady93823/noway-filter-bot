@@ -12,7 +12,7 @@ Unknown tokens after that point are debris (release groups, platform
 tags, bitrates) and are dropped; languages are still harvested from
 the whole string because multi-audio lists sit late in the name.
 
-Series markers (S02, S01E12, EP01, [E01 - 04], PART 1) are metadata
+Series markers (S02, S01E12, EP01, EP 10, [E01 - 04], PART 1) are metadata
 markers too, but they are *kept* as structured fields instead of being
 thrown away: the season joins the title's identity (S01 and S02 are
 different things, not quality variants of one thing) and the episode
@@ -53,6 +53,11 @@ _SEASON_EPISODE_RE = re.compile(r"^s(\d{1,2})e(\d{1,3})(?:e(\d{1,3}))?$")  # s01
 _SEASON_RE = re.compile(r"^s(\d{1,2})$")  # s01, s2
 _EPISODE_RE = re.compile(r"^e(?:p|pisode)?(\d{1,3})$")  # e01, ep01
 _BARE_NUMBER_RE = re.compile(r"^\d{1,3}$")
+# "EP 10" / "Episode 10" - the marker word and its number arrive as two
+# separate tokens, so _EPISODE_RE (which needs them fused) never fires and
+# both leak into the title. A bare "e" is deliberately NOT here: it is a
+# plausible title token on its own, and the fused forms already cover E01.
+_EPISODE_WORDS = frozenset({"ep", "eps", "epi", "episode", "episodes"})
 # "part001"/"part002" are multipart FILE SPLITS of one movie, never a
 # season part - the splitter keeps them fused, so they never reach the
 # season logic (which only reads a separate "part" token + number).
@@ -157,9 +162,23 @@ def _extract_series(tokens: list[str], consumed: list[bool]) -> tuple[
             index += 2
             continue
 
+        # Spelled-out episode marker, the same two-token shape as
+        # "season 2" above. Handled together with the fused form so the
+        # "[E01 - 04]" range logic below covers "EP 01 - 04" as well.
+        spelled = (
+            token in _EPISODE_WORDS
+            and index + 1 < len(tokens)
+            and not consumed[index + 1]
+            and _BARE_NUMBER_RE.match(tokens[index + 1])
+        )
         match = _EPISODE_RE.match(token)
-        if match:
-            episode = int(match.group(1))
+        if match or spelled:
+            if spelled:
+                _mark(index)  # the word itself
+                index += 1
+                episode = int(tokens[index])
+            else:
+                episode = int(match.group(1))
             _mark(index)
             index += 1
             # "[E01 - 04]" and "E05-08" both split into <ep-token> <number>

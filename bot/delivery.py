@@ -6,7 +6,9 @@ from pyrogram import Client
 from pyrogram.enums import ParseMode
 
 from bot import ui
+from bot.ephemeral import schedule_delivery_expiry
 from shared import logchannel
+from shared.config import get_settings
 from shared.db.engine import get_session_factory
 from shared.logchannel import log_event
 from shared.db.repos import files as files_repo
@@ -39,7 +41,7 @@ async def send_file(
         )
         return False
 
-    await client.send_cached_media(
+    sent = await client.send_cached_media(
         chat_id,
         file.telegram_file_id,
         caption=ui.delivery_caption(
@@ -55,6 +57,28 @@ async def send_file(
         ),
         parse_mode=ParseMode.HTML,
     )
+
+    # The file is temporary, so the warning has to arrive with it - not be
+    # something the user could have read somewhere else. Both message ids
+    # go into Redis together: the sweeper deletes the file and rewrites
+    # this notice in place, so the chat explains what happened instead of
+    # quietly losing a message.
+    ttl = get_settings().delivery_ttl
+    try:
+        notice = await client.send_message(
+            chat_id,
+            ui.delivery_warning_text(ttl),
+            parse_mode=ParseMode.HTML,
+            reply_to_message_id=sent.id,
+        )
+        notice_id = notice.id
+    except Exception as exc:
+        # An unsent warning must not cost the user their file. Schedule
+        # the deletion anyway with no notice to rewrite (id 0).
+        logger.warning("delivery notice failed for %s: %s", chat_id, exc)
+        notice_id = 0
+    await schedule_delivery_expiry(chat_id, sent.id, notice_id, ttl)
+
     await log_event(
         client,
         logchannel.DELIVERY,

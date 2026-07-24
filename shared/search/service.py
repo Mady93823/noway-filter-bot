@@ -167,6 +167,7 @@ async def search(
             threshold=settings.search_fuzzy_threshold,
             limit=settings.search_max_results,
             season=parsed.season,
+            close_limit=settings.search_close_matches,
         )
         if not title_ids:
             return _EMPTY_PAGE

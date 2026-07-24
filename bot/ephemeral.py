@@ -18,19 +18,28 @@ A sorted set scored by deletion time makes the whole thing one range
 query per tick, survives restarts, and lets any instance do the work
 (golden rule 4 - cross-request state belongs in Redis).
 
-PM is never touched. A user's own chat is their archive; deleting the
-file they came for would be hostile.
+The same queue runs delivered files, on a second sorted set. Those are in
+PM, which this module otherwise never touches, so they get their own
+treatment: the file is deleted, and the warning message sent with it is
+rewritten in place to say so. A chat that silently loses a message is
+worse than one that explains itself.
 """
 
 import asyncio
 import logging
 import time
 
+from pyrogram.enums import ParseMode
+
+from bot import ui
 from shared.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
 _KEY = "ephemeral"
+# Delivered files. Member is "<chat_id>:<file_msg_id>:<notice_msg_id>";
+# a notice id of 0 means the warning never sent and only the file is due.
+_DELIVERY_KEY = "delivery-expiry"
 # One pass every 20s: the visible error on a 5 minute lifetime is at
 # most 20 seconds, and the cost is a single ZRANGEBYSCORE per tick.
 _TICK = 20
@@ -66,8 +75,86 @@ async def expire_in_group(source, sent) -> None:
     )
 
 
+async def schedule_delivery_expiry(
+    chat_id: int, file_message_id: int, notice_message_id: int, ttl: int
+) -> None:
+    """Mark a delivered file (and its warning) for expiry. Never raises.
+
+    Kept separate from schedule_delete because the two ends differ: this
+    one deletes the file and REWRITES the notice, so both ids have to
+    travel together through Redis rather than as two independent entries
+    that could expire apart.
+    """
+    try:
+        await get_redis().zadd(
+            _DELIVERY_KEY,
+            {
+                f"{chat_id}:{file_message_id}:{notice_message_id}": time.time() + ttl
+            },
+        )
+    except Exception as exc:
+        # Same trade as schedule_delete: a file that fails to schedule
+        # simply stays. Losing the delivery over it would be worse.
+        logger.warning(
+            "could not schedule expiry for %s in %s: %s",
+            file_message_id,
+            chat_id,
+            exc,
+        )
+
+
+async def _sweep_deliveries(client) -> int:
+    """Expire delivered files: delete the file, rewrite its notice."""
+    redis = get_redis()
+    due = await redis.zrangebyscore(
+        _DELIVERY_KEY, 0, time.time(), start=0, num=_BATCH
+    )
+    if not due:
+        return 0
+
+    removed = 0
+    for member in due:
+        # Two rpartitions from the right: the chat id is negative in
+        # groups and both message ids are the tail, so splitting from the
+        # left would misread the sign.
+        head, _, notice_part = member.rpartition(":")
+        chat_part, _, file_part = head.rpartition(":")
+        try:
+            chat_id, file_id, notice_id = (
+                int(chat_part), int(file_part), int(notice_part)
+            )
+        except ValueError:
+            logger.debug("malformed delivery entry %s", member)
+            continue
+        try:
+            await client.delete_messages(chat_id, file_id)
+            removed += 1
+        except Exception as exc:
+            logger.debug("delivery delete failed for %s: %s", member, exc)
+        if notice_id:
+            try:
+                await client.edit_message_text(
+                    chat_id,
+                    notice_id,
+                    ui.delivery_expired_text(),
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception as exc:
+                # The user may have deleted the notice themselves. The
+                # file is already gone either way.
+                logger.debug("delivery notice rewrite failed for %s: %s", member, exc)
+
+    await redis.zrem(_DELIVERY_KEY, *due)
+    return removed
+
+
 async def sweep_once(client) -> int:
     """Delete everything now due. Returns how many were actually removed."""
+    return await _sweep_group(client) + await _sweep_deliveries(client)
+
+
+async def _sweep_group(client) -> int:
+    """Expire bot messages posted in groups."""
     redis = get_redis()
     due = await redis.zrangebyscore(_KEY, 0, time.time(), start=0, num=_BATCH)
     if not due:

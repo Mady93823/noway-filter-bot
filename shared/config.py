@@ -52,6 +52,11 @@ class Settings(DbSettings):
     # conflate swati/swathi, but search recall should still surface them
     # both for a near-miss query.
     search_fuzzy_threshold: float = Field(default=0.3, gt=0, lt=1)
+    # Trigram near-misses ("game over" for "game of thrones") are offered
+    # only when nothing actually contained the query, and then only the
+    # best few. A long tail of near-misses padding a real hit reads as
+    # results, and the user cannot tell which is which.
+    search_close_matches: int = Field(default=5, ge=0, le=20)
     # Looser again, and for a different job: "did you mean" only runs
     # after search has already returned nothing, where a loose guess
     # beats a dead end. Never used to decide what search itself returns.
@@ -64,6 +69,11 @@ class Settings(DbSettings):
     # deleted. Groups are the main surface here and result cards pile up
     # fast. PM is never auto-cleared - that is the user's own archive.
     group_message_ttl: int = Field(default=300, ge=30, le=86400)
+    # How long a delivered file survives in the user's PM before the bot
+    # deletes it. The user is warned in the message that follows the file,
+    # and that notice is rewritten in place once the file is gone - the
+    # chat never just silently loses a message.
+    delivery_ttl: int = Field(default=600, ge=60, le=86400)
 
     # Group keyword filters. The cache TTL only bounds staleness after a
     # missed invalidation - every add/remove clears its group's key
