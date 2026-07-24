@@ -32,10 +32,10 @@ No <br>, no nesting of blockquote, no custom emoji without Premium.
 
 Every card follows the same shape, so a user learns the layout once:
 
-    <icon>  <b>what this is</b>
-    <i>the one number that matters</i>
+    <icon>  <b>WHAT THIS IS</b>
+    <i>the one line that sets expectations</i>
 
-    <blockquote>the facts</blockquote>
+    <blockquote>the facts, one per line: glyph, label, value</blockquote>
 
     <i>what to do next</i>
 
@@ -43,6 +43,18 @@ The blockquote is doing real work, not decoration: Telegram draws a
 coloured bar down its left edge, which separates content from chrome far
 better than blank lines. Every card ends on an action, because a card
 that only reports leaves the user guessing.
+
+Rule lines (━) appear ONLY where a card has two halves the blockquote bar
+cannot bracket on its own. Anywhere else they are noise, and noise is
+what makes a "designed" bot feel cheap.
+
+The emoji vocabulary is fixed - one meaning each, so a glyph carries
+information instead of decoration:
+
+    🎬 title      💎 quality/tier   🎧 audio     📦 size      📥 delivery
+    🔍 search     📂 file count     🎯 filter    📺 series    📄 page
+    👑 premium    🎉 success        ⚠️ error     🔒/🔓 gate    ⏳ time
+    🟢 the ACTIVE filter chip, and nothing else
 
 One caveat that has bitten before: callback ALERTS (`callback.answer(...,
 show_alert=True)`) render as plain text, so the strings that feed them -
@@ -96,7 +108,36 @@ NOOP_CALLBACK = "nop"
 # thrones" lists its one true hit and then "game over", "the hating game"
 # and "the key game" in the same voice, and the reader has no way to know
 # which is which.
-CLOSE_MATCH_DIVIDER = "<i>───────  🤔  close names  ───────</i>"
+CLOSE_MATCH_DIVIDER = "<i>━━━━━━━  🤔  close names  ━━━━━━━</i>"
+
+# Separator inside one fact's value ("tamil • english"). A bullet reads as
+# "and also", which is what a language or quality list actually means; the
+# heavier "   ·   " stays reserved for separating whole facts.
+_DOT = " • "
+
+# Resolution tier glyphs. Someone scanning eight rows reads the glyph well
+# before the number, so the ladder has to be legible at a glance: a crown
+# for the best thing on offer, a phone for the small one.
+_TIER_BY_RESOLUTION = {
+    "2160p": "👑",
+    "1440p": "💎",
+    "1080p": "💎",
+    "720p": "⚡",
+    "576p": "📱",
+    "480p": "📱",
+    "360p": "📱",
+    "240p": "📱",
+}
+
+# For a label with no resolution in it at all ("BluRay", "Original", None).
+_TIER_FALLBACK = "🎞"
+
+# NOTE: no country flags on the audio chips. Half this index is Indian
+# audio, and 🇮🇳 next to tamil, telugu, hindi, malayalam and kannada
+# labels five different choices with one identical glyph - the exact
+# opposite of what a chip row is for. The three-letter code the bot
+# already teaches (tam / tel / hin) distinguishes every one of them and
+# works for a language no flag table would have covered.
 
 
 def format_size(size: int | None) -> str:
@@ -111,13 +152,19 @@ def format_size(size: int | None) -> str:
 
 
 def start_text(mention: str) -> str:
+    # TODO(sticker): a short welcome sticker sent immediately before this
+    # card would land well - it is the one moment in the flow with no
+    # latency to cover and nothing else competing for attention.
     return (
-        f"✨  <b>Welcome, {mention}</b>\n\n"
-        "<blockquote>🎬 I'm your private <b>movie vault</b>.\n"
-        "⚡ Send me a name — every quality variant I've indexed comes "
-        "straight back.</blockquote>\n\n"
-        "🎯 <b>Sharpest search</b>\n"
-        "<code>name · year · language</code>\n"
+        f"✨  <b>Welcome, {mention}</b>\n"
+        "<i>your private cinema — one search away</i>\n\n"
+        "<blockquote>🍿 <b>PERSONAL MOVIE LIBRARY</b>\n"
+        "⚡ <b>Instant search</b>   ·   no commands to learn\n"
+        "💎 <b>Every quality</b>   ·   nothing merged away\n"
+        "🎧 <b>Every audio track</b>   ·   pick your language\n"
+        "📥 <b>Instant delivery</b>   ·   right here in this chat"
+        "</blockquote>\n\n"
+        "🔍 <b>Try it now</b>\n"
         "<code>swati 1997 tamil</code>\n\n"
         "<i>👇 Have a look around</i>"
     )
@@ -127,8 +174,8 @@ def start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("🔍  How to search", callback_data="hlp"),
-                InlineKeyboardButton("🗂  About", callback_data="abt"),
+                InlineKeyboardButton("🔍  How to Search", callback_data="hlp"),
+                InlineKeyboardButton("✨  About", callback_data="abt"),
             ]
         ]
     )
@@ -136,29 +183,34 @@ def start_keyboard() -> InlineKeyboardMarkup:
 
 def help_text() -> str:
     return (
-        "🔍  <b>How to search</b>\n\n"
-        "<blockquote>Just type what you're after. No commands, no "
-        "syntax to remember.</blockquote>\n\n"
-        "🎚 <b>Narrow it down</b>\n"
-        "▫️ <code>swati</code>   ·   title only\n"
-        "▫️ <code>swati 1997</code>   ·   + year\n"
-        "▫️ <code>swati 1997 tamil</code>   ·   + language\n"
-        "▫️ <code>swati 1997 tamil 720p</code>   ·   + quality\n\n"
-        "💡 <b>Shortcuts</b>   <code>tam</code> <code>tel</code> "
-        "<code>hin</code> <code>mal</code> <code>kan</code> <code>eng</code>\n\n"
-        "🔁 Already searched? Send just <code>1080p</code> or "
-        "<code>tamil</code> to filter what you found.\n\n"
+        "🔍  <b>HOW TO SEARCH</b>\n"
+        "<i>no commands, no syntax to remember</i>\n\n"
+        "<blockquote>🎬 <code>avatar</code>\n"
+        "🎬 <code>avatar 2009</code>\n"
+        "🎬 <code>avatar hindi</code>\n"
+        "🎬 <code>avatar 1080p</code></blockquote>\n\n"
+        "🎯 <b>Stack them for the sharpest hit</b>\n"
+        "<code>swati 1997 tamil 720p</code>\n\n"
+        "🎧 <b>Language shortcuts</b>\n"
+        "<code>tam</code>  <code>tel</code>  <code>hin</code>  "
+        "<code>mal</code>  <code>kan</code>  <code>eng</code>\n\n"
+        "🔁 <b>Refine what you already found</b>\n"
+        "Send just <code>1080p</code> or <code>tamil</code> straight after "
+        "a search and the list narrows.\n\n"
         "<i>📥 Tap any file — it lands right here in this chat</i>"
     )
 
 
 def about_text() -> str:
     return (
-        "🗂  <b>About this bot</b>\n\n"
-        "<blockquote>⚡ Lightning search over a self-hosted index\n"
-        "🎞 Every quality variant kept — nothing merged away\n"
-        "🔒 No third-party metadata APIs, no tracking</blockquote>\n\n"
-        "<i>🎬 Built for speed. Type a movie name to begin</i>"
+        "✨  <b>ABOUT THIS BOT</b>\n"
+        "<i>built for speed, not for show</i>\n\n"
+        "<blockquote>⚡ <b>Fast</b>   ·   search over a self-hosted index\n"
+        "💎 <b>Complete</b>   ·   every quality variant kept\n"
+        "🎧 <b>Multilingual</b>   ·   audio resolved locally\n"
+        "🔒 <b>Private</b>   ·   no third-party APIs, no tracking"
+        "</blockquote>\n\n"
+        "<i>🎬 Type a movie name to begin</i>"
     )
 
 
@@ -170,11 +222,12 @@ def back_keyboard() -> InlineKeyboardMarkup:
 
 def no_results_text(query: str) -> str:
     return (
-        "😕  <b>Nothing found</b>\n"
+        "😔  <b>Couldn't find anything</b>\n"
         f"<i>for “{escape(query)}”</i>\n\n"
-        "<blockquote>💡 Try the full pattern\n"
-        "<code>name year language</code>\n"
-        "<code>swati 1997 tamil</code></blockquote>\n\n"
+        "<blockquote>💡 <b>Try one of these</b>\n"
+        "🎬 <code>movie name</code>\n"
+        "🎬 <code>movie name 1997</code>\n"
+        "🎬 <code>movie name tamil</code></blockquote>\n\n"
         "<i>🔤 Check the spelling — or it may not be indexed yet</i>"
     )
 
@@ -195,7 +248,7 @@ def build_suggestions(
     proper cursor and the same keyboard as any other search.
     """
     lines = [
-        "😕  <b>Nothing found</b>",
+        "😔  <b>Couldn't find anything</b>",
         f"<i>for “{escape(query)}”</i>",
         "",
         "<blockquote>🤔 <b>Did you mean…</b></blockquote>",
@@ -223,26 +276,34 @@ def build_gate(short_url: str, hours: int) -> tuple[str, InlineKeyboardMarkup]:
     question that matters to someone looking at an ad gate, and burying
     it under instructions is what makes these feel like a scam.
     """
+    plural = "s" if hours != 1 else ""
     text = (
-        "🔒  <b>One quick step</b>\n"
-        f"<i>unlocks everything for {hours} hour"
-        f"{'s' if hours != 1 else ''}</i>\n\n"
-        "<blockquote>1️⃣  Tap <b>Unlock</b> below\n"
+        "👑  <b>VIP ACCESS</b>\n"
+        f"<i>one quick step — then {hours} hour{plural} of everything</i>\n\n"
+        "<blockquote>✨ <b>Unlimited downloads</b>\n"
+        "⚡ <b>Instant delivery</b>\n"
+        "💎 <b>The full HD collection</b>\n"
+        f"⏳ <b>Valid for</b>   {hours} hour{plural}</blockquote>\n\n"
+        "🔓 <b>How it works</b>\n"
+        "1️⃣  Tap <b>Unlock Now</b> below\n"
         "2️⃣  Wait for the countdown, press <i>continue</i>\n"
-        "3️⃣  You land back here — tap your file again</blockquote>\n\n"
+        "3️⃣  You land back here — tap your file again\n\n"
         "<i>⏳ The link stays valid for 30 minutes</i>"
     )
     rows = [
-        [InlineKeyboardButton("🔓  Unlock", url=short_url)],
-        [InlineKeyboardButton("💎  My plan", callback_data="plan")],
+        [InlineKeyboardButton("🚀  Unlock Now", url=short_url)],
+        [InlineKeyboardButton("👑  My Plan", callback_data="plan")],
     ]
     return text, InlineKeyboardMarkup(rows)
 
 
 def access_granted_text(hours: int, until_text: str) -> str:
+    # TODO(sticker): a celebration sticker belongs here - this is the one
+    # card in the whole flow the user genuinely earned.
     return (
-        "🎉  <b>You're in!</b>\n\n"
-        f"<blockquote>🎬 <b>Unlimited files</b>   next {hours} hour"
+        "🎉  <b>ACCESS GRANTED</b>\n"
+        "<i>you're in — the whole library is open</i>\n\n"
+        f"<blockquote>💎 <b>Unlimited files</b>   next {hours} hour"
         f"{'s' if hours != 1 else ''}\n"
         f"⏳ <b>Expires in</b>   {until_text}</blockquote>\n\n"
         "<i>👇 Tap your file again — or search for something new</i>"
@@ -253,26 +314,31 @@ def plan_text(remaining: str | None) -> str:
     """/myplan. Says what to do next in both states, not just the status."""
     if remaining is None:
         return (
-            "💤  <b>No active access</b>\n\n"
-            "<blockquote>🔓 Tap any file and you'll get a one-step "
-            "unlock link.\n"
-            "🔍 Searching is always free.</blockquote>\n\n"
+            "💤  <b>NO ACTIVE PLAN</b>\n"
+            "<i>searching is free — downloading takes one tap</i>\n\n"
+            "<blockquote>🔓 <b>Unlock</b>   tap any file for a one-step "
+            "link\n"
+            "🔍 <b>Search</b>   free, always</blockquote>\n\n"
             "<i>👇 Send a movie name to get started</i>"
         )
     return (
-        "💎  <b>Access active</b>\n\n"
-        f"<blockquote>⏳ <b>Time left</b>   {remaining}</blockquote>\n\n"
-        "<i>🎬 Unlimited files until then. Enjoy!</i>"
+        "👑  <b>PLAN ACTIVE</b>\n"
+        "<i>everything unlocked</i>\n\n"
+        f"<blockquote>⏳ <b>Time left</b>   {remaining}\n"
+        "💎 <b>Downloads</b>   unlimited</blockquote>\n\n"
+        "<i>🍿 Enjoy — search for anything</i>"
     )
 
 
 def premium_granted_text(remaining: str) -> str:
     """Sent to the user when an admin grants them access unprompted."""
     return (
-        "💎  <b>Premium activated</b>\n\n"
+        "🎉  <b>PREMIUM ACTIVATED</b>\n"
+        "<i>a gift from the admins</i>\n\n"
         f"<blockquote>⏳ <b>Time left</b>   {remaining}\n"
-        "🚫 No unlock links, no waiting</blockquote>\n\n"
-        "<i>🎬 Unlimited files. Enjoy!</i>"
+        "💎 <b>Downloads</b>   unlimited\n"
+        "🚫 <b>Unlock links</b>   none, no waiting</blockquote>\n\n"
+        "<i>🍿 Enjoy!</i>"
     )
 
 
@@ -286,7 +352,7 @@ def verify_failed_text() -> str:
         "⚠️  <b>That link didn't work</b>\n\n"
         "<blockquote>It may have expired, or it was already "
         "used.</blockquote>\n\n"
-        "<i>🔄 Tap any file again to get a fresh one</i>"
+        "<i>💡 Tap any file again — a fresh link takes a second</i>"
     )
 
 
@@ -296,8 +362,8 @@ def plan_alert(remaining: str | None) -> str:
     Telegram truncates these hard, so it says the one fact and stops.
     """
     if remaining is None:
-        return "💤 No active access yet — tap a file to unlock."
-    return f"💎 Access active · {remaining} left"
+        return "💤 No active plan yet — tap a file to unlock."
+    return f"👑 Plan active · {remaining} left"
 
 
 def gate_unavailable_text() -> str:
@@ -310,7 +376,7 @@ def gate_unavailable_text() -> str:
         "⚠️  <b>Couldn't create your unlock link</b>\n\n"
         "<blockquote>The link service isn't responding right now. The "
         "admins have already been told.</blockquote>\n\n"
-        "<i>🔄 Try again in a minute</i>"
+        "<i>💡 Try again in a minute — nothing is lost</i>"
     )
 
 
@@ -330,7 +396,7 @@ def greeting_text(mention: str) -> str:
 
 
 def thanks_text() -> str:
-    return "🤗  <b>Anytime!</b>\n\n<i>🎬 Send another name whenever you need one</i>"
+    return "🤗  <b>Anytime!</b>\n\n<i>🍿 Send another name whenever you need one</i>"
 
 
 def chat_help_text() -> str:
@@ -344,7 +410,7 @@ def chat_help_text() -> str:
         "<i>that's the whole trick</i>\n\n"
         "<blockquote>🎯 <b>Sharpest</b>   <code>name year language</code>\n"
         "<code>swati 1997 tamil</code></blockquote>\n\n"
-        "🎚 Add a quality to narrow it — <code>1080p</code>\n"
+        "💎 Add a quality to narrow it — <code>1080p</code>\n"
         "🔁 Or send just <code>1080p</code> / <code>tamil</code> right "
         "after a search to filter what you already found."
     )
@@ -366,9 +432,28 @@ def _truncate(label: str) -> str:
     return label
 
 
+def _tier_icon(quality: str | None) -> str:
+    """Glyph for a quality label, chosen by the resolution inside it.
+
+    Keyed off resolution_of() so "1080p WEB-DL" and "1080p BluRay" get the
+    same glyph - the rip source is not a quality tier.
+    """
+    return _TIER_BY_RESOLUTION.get(resolution_of(quality) or "", _TIER_FALLBACK)
+
+
+def _lang_chip_code(language: str) -> str:
+    """'tamil' -> 'Tam'. The badge an inactive audio chip wears.
+
+    Title case, not upper: a row of TAM TEL HIN reads as shouting next to
+    the lowercase language names everywhere else in the card.
+    """
+    return short_code(language).title()
+
+
 def _variant_button(variant, show_languages: bool = True) -> InlineKeyboardButton:
     # Episode label leads: for a series it is what tells two variants
-    # apart, so it must survive the length truncation.
+    # apart, so it must survive the length truncation. The tier glyph sits
+    # ahead of it, so even a clipped row still announces its quality.
     parts = [
         piece
         for piece in (
@@ -381,7 +466,7 @@ def _variant_button(variant, show_languages: bool = True) -> InlineKeyboardButto
         )
         if piece
     ]
-    label = "📥 " + " · ".join(parts)
+    label = f"{_tier_icon(variant.quality)} " + " · ".join(parts)
     return InlineKeyboardButton(
         _truncate(label), callback_data=f"get:{variant.file_db_id}"
     )
@@ -397,7 +482,7 @@ def _languages_line(languages: tuple[str, ...]) -> str:
         return "language n/a"
     shown = languages[:MAX_LANGS_SHOWN]
     extra = len(languages) - len(shown)
-    return " · ".join(shown) + (f" +{extra}" if extra else "")
+    return _DOT.join(shown) + (f" +{extra}" if extra else "")
 
 
 def _files_word(count: int) -> str:
@@ -405,7 +490,7 @@ def _files_word(count: int) -> str:
 
 
 def _headline(result: TitleResult) -> str:
-    """'<b>Title</b> <i>(2025)</i> · 🎞 <i>Season 2</i>', escaped."""
+    """'<b>Title</b> <i>(2025)</i> · 📺 <i>Season 2</i>', escaped."""
     parts = [f"<b>{escape(result.display_title)}</b>"]
     if result.year:
         parts.append(f"<i>({result.year})</i>")
@@ -426,13 +511,14 @@ def _index_mark(index: int) -> str:
 
 
 def _title_line(index: int, result: TitleResult) -> str:
-    # An untagged title says nothing useful with "🗣 language n/a" - the
-    # row is tidier carrying only the file count it can actually vouch for.
-    meta = [f"💾 {_files_word(len(result.variants))}"]
+    # The file count leads because it is the promise this row makes -
+    # "there is something to choose from in here". An untagged title says
+    # nothing useful with "🎧 language n/a", so that half is simply gone.
+    meta = [f"💎 {_files_word(len(result.variants))}"]
     if result.languages:
-        meta.insert(0, f"🗣 {escape(_languages_line(result.languages))}")
+        meta.append(f"🎧 {escape(_languages_line(result.languages))}")
     # The meta line is indented under its keycap so the eye reads each
-    # entry as one block instead of a run of alternating lines.
+    # entry as one card instead of a run of alternating lines.
     return (
         f"{_index_mark(index)}  {_headline(result)}\n"
         f"      <i>{'   ·   '.join(meta)}</i>"
@@ -532,6 +618,12 @@ def _language_chips(
     audio must not silently widen the resolution the user already picked -
     and resets to the first page, because the old page number means
     nothing once the list behind it changed.
+
+    🟢 is reserved for the ACTIVE chip, here and in the resolution row.
+    That green dot IS the state readout: one per row, and the user knows
+    what they are looking at without a header saying so. The active chip
+    spells its language out in full; the rest wear their three-letter code
+    (Tam, Tel, Hin), which is what keeps a six-language row scannable.
     """
     languages = _variant_languages(result)
     if len(languages) < 2:
@@ -541,15 +633,17 @@ def _language_chips(
         InlineKeyboardButton(
             # Inactive form carries the same glyph as the card's Audio
             # row, so the two chip rows label themselves without a header.
-            "🟢 All" if active is None else "🗣 All",
+            "🟢 All" if active is None else "🎧 All",
             callback_data=title_callback(result.title_id, cursor, quality=quality),
         )
     ]
     for language in languages:
-        mark = "🟢 " if language == active else ""
+        label = (
+            f"🟢 {language}" if language == active else _lang_chip_code(language)
+        )
         chips.append(
             InlineKeyboardButton(
-                _truncate(f"{mark}{language}"),
+                _truncate(label),
                 callback_data=title_callback(
                     result.title_id, cursor, language=language, quality=quality
                 ),
@@ -564,7 +658,9 @@ def _quality_chips(
     """Resolution filter row(s), the counterpart to the audio chips.
 
     This is the lever that makes a 60-file season usable: one tap turns
-    eight pages of mixed rips into the two the user actually wanted.
+    eight pages of mixed rips into the two the user actually wanted. The
+    tier glyph on each inactive chip (👑 💎 ⚡ 📱) is the same one its
+    files carry below, so the row and the list read as one ladder.
     """
     resolutions = _variant_resolutions(result)
     if len(resolutions) < 2:
@@ -577,7 +673,7 @@ def _quality_chips(
         )
     ]
     for resolution in resolutions:
-        mark = "🟢 " if resolution == active else ""
+        mark = "🟢 " if resolution == active else f"{_tier_icon(resolution)} "
         chips.append(
             InlineKeyboardButton(
                 _truncate(f"{mark}{resolution}"),
@@ -595,7 +691,7 @@ def _quality_line(variants) -> str:
         return ""
     shown = qualities[:MAX_QUALITIES_SHOWN]
     extra = len(qualities) - len(shown)
-    return " · ".join(shown) + (f" +{extra}" if extra else "")
+    return _DOT.join(shown) + (f" +{extra}" if extra else "")
 
 
 def build_title(
@@ -633,11 +729,11 @@ def build_title(
     # far better than blank lines do.
     facts = []
     if result.languages:  # an "Audio: n/a" row is worse than no row
-        facts.append(f"🗣 <b>Audio</b>   {escape(_languages_line(result.languages))}")
+        facts.append(f"🎧 <b>Audio</b>   {escape(_languages_line(result.languages))}")
     quality_summary = _quality_line(variants)
     if quality_summary:
-        facts.append(f"🎚 <b>Quality</b>   {escape(quality_summary)}")
-    facts.append(f"💾 <b>Files</b>   {len(variants)}")
+        facts.append(f"💎 <b>Quality</b>   {escape(quality_summary)}")
+    facts.append(f"📂 <b>Files</b>   {len(variants)}")
     active_filters = [
         label
         for label in (
@@ -649,12 +745,17 @@ def build_title(
     if active_filters:
         facts.append(f"🎯 <b>Filter</b>   {'   ·   '.join(active_filters)}")
 
+    # The rule line earns its place on this card and nowhere else: there
+    # is a masthead and a body here, and the blockquote bar only brackets
+    # the body.
     lines = [
-        f"🎞  {_headline(result)}",
+        "🍿  <b>MOVIE DETAILS</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"🎬  {_headline(result)}",
         "",
         "<blockquote>" + "\n".join(facts) + "</blockquote>",
         "",
-        "<i>👇 Pick a file — it lands right here in this chat 📥</i>",
+        "<i>👇 Pick a version — it lands right here in this chat 📥</i>",
     ]
 
     # When every listed variant carries the same audio, the block above
@@ -670,7 +771,7 @@ def build_title(
         if page > 0:
             nav.append(
                 InlineKeyboardButton(
-                    "⬅️",
+                    "◀️",
                     callback_data=title_callback(
                         result.title_id, cursor,
                         language=language, quality=quality, page=page - 1,
@@ -685,7 +786,7 @@ def build_title(
         if page + 1 < pages:
             nav.append(
                 InlineKeyboardButton(
-                    "➡️",
+                    "▶️",
                     callback_data=title_callback(
                         result.title_id, cursor,
                         language=language, quality=quality, page=page + 1,
@@ -711,6 +812,12 @@ def build_results(page: SearchPage, page_size: int) -> tuple[str, InlineKeyboard
     A lone hit skips the list entirely and opens straight into its
     variants - making the user tap through a one-item menu is noise.
     """
+    # NOTE(progressive reveal - NOT implemented here, and deliberately so):
+    # the search handler could send one placeholder and edit it through
+    #     "🔍  Searching…"  ->  "📂  Opening the library…"  ->  this card
+    # which reads as motion without pretending to animate anything. It
+    # costs two edit_text calls and belongs in the handler, not in this
+    # module - ui.py returns strings, it never touches the API.
     current = page.offset // page_size + 1
     pages = max(1, ceil(page.total / page_size))
     cursor = encode_cursor(page.qhash, page.offset) if page.qhash else ""
@@ -758,9 +865,9 @@ def build_results(page: SearchPage, page_size: int) -> tuple[str, InlineKeyboard
     # The list goes in a quoted block: Telegram draws a coloured bar down
     # the side, which separates ten two-line entries from the header and
     # the buttons far better than blank lines manage. Entries are spaced
-    # inside it so each title reads as its own block, not a wall.
+    # inside it so each title reads as its own card, not a wall.
     lines = [
-        f"🔎  <b>{escape(page.query)}</b>",
+        f"🔍  <b>{escape(page.query)}</b>",
         f"<i>{counter}</i>",
         "",
         "<blockquote>" + "\n\n".join(entries) + "</blockquote>",
@@ -771,7 +878,7 @@ def build_results(page: SearchPage, page_size: int) -> tuple[str, InlineKeyboard
     nav: list[InlineKeyboardButton] = []
     if page.qhash and page.offset > 0:
         prev_cursor = encode_cursor(page.qhash, max(0, page.offset - page_size))
-        nav.append(InlineKeyboardButton("⬅️  Prev", callback_data=f"nav:{prev_cursor}"))
+        nav.append(InlineKeyboardButton("◀️  Prev", callback_data=f"nav:{prev_cursor}"))
     if pages > 1:
         nav.append(
             InlineKeyboardButton(
@@ -780,7 +887,7 @@ def build_results(page: SearchPage, page_size: int) -> tuple[str, InlineKeyboard
         )
     if page.next_cursor:
         nav.append(
-            InlineKeyboardButton("Next  ➡️", callback_data=f"nav:{page.next_cursor}")
+            InlineKeyboardButton("Next  ▶️", callback_data=f"nav:{page.next_cursor}")
         )
     if nav:
         rows.append(nav)
@@ -796,7 +903,7 @@ def delivery_warning_text(ttl_seconds: int) -> str:
     user who scrolls past it loses what they came for. Telegram HTML has
     no colour, so "red" is carried by 🔴/❗️ and bold; the escape hatch
     (search again) is stated too, so the warning informs instead of just
-    alarming.
+    alarming. This is the one card that is deliberately NOT pretty.
     """
     minutes = max(1, ttl_seconds // 60)
     plural = "S" if minutes != 1 else ""
@@ -815,10 +922,10 @@ def delivery_warning_text(ttl_seconds: int) -> str:
 def delivery_expired_text() -> str:
     """Replaces the warning once the file is gone. Says what to do next."""
     return (
-        "🗑 <b>Your file was deleted</b>\n\n"
+        "🗑  <b>Your file was deleted</b>\n\n"
         "<blockquote>⏳ The time window closed and the file was removed "
         "from this chat.</blockquote>\n\n"
-        "🔍 <b>Search again</b> and you can download it right away."
+        "<i>💡 Search again — you can download it right away, any time.</i>"
     )
 
 
@@ -831,23 +938,29 @@ def delivery_caption(
     season: int | None = None,
     episodes: str | None = None,
 ) -> str:
+    """The caption on the delivered file itself.
+
+    One fact per line, each behind its own glyph. This caption is read on
+    a file bubble that is already busy with a filename and a progress bar,
+    and a single dot-separated run of details just disappears into that.
+    """
+    # TODO(sticker): a "🍿 enjoy" sticker could follow the file here - but
+    # only ever AFTER the expiry warning, never between file and warning.
     year_part = f" ({year})" if year else ""
     year_part += season_label(season)
-    parts = [f"🎬 <b>{escape(display_title)}</b>{escape(year_part)}"]
-    # Audio gets its own line rather than joining the technical run: it is
-    # the one detail people re-read after the file has landed.
-    details = "  ·  ".join(
-        piece
-        for piece in (
-            escape(episodes) if episodes else None,
-            escape(quality) if quality else None,
-            format_size(file_size) if file_size else None,
-        )
-        if piece
-    )
-    if details:
-        parts.append(f"📦 {details}")
+    parts = [
+        "🎉  <b>Download Ready</b>",
+        "",
+        f"🎬 <b>{escape(display_title)}</b>{escape(year_part)}",
+    ]
+    if episodes:
+        parts.append(f"📺 {escape(episodes)}")
+    if quality:
+        parts.append(f"{_tier_icon(quality)} {escape(quality)}")
     if languages:
-        parts.append(f"🗣 {escape(' · '.join(languages))}")
-    parts.append("✨ <i>Enjoy!</i>")
+        parts.append(f"🎧 {escape(_DOT.join(languages))}")
+    if file_size:
+        parts.append(f"📦 {format_size(file_size)}")
+    parts.append("")
+    parts.append("🍿 <i>Enjoy your movie!</i>")
     return "\n".join(parts)
