@@ -105,7 +105,12 @@ async def search_title_ids(
 
     def _apply_filters(query):
         if year is not None:
-            query = query.where(or_(Title.year == year, Title.year.is_(None)))
+            # Strict in SEARCH: a year the user typed is a disambiguator, so
+            # a NULL-year row ("Karuppu Aadu", a season with no year) must
+            # not surface on "karuppu 2026". Resolution (find_exact/fuzzy)
+            # keeps its own NULL tolerance - there a title's year may simply
+            # not be learned yet; here the user asserted one.
+            query = query.where(Title.year == year)
         if languages:
             query = query.where(Title.languages.overlap(list(languages)))
         # Only narrows when the user actually named a season ("wednesday

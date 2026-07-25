@@ -18,6 +18,30 @@ def _display_from_guess(guess: str) -> str:
     return guess.title()
 
 
+def _distinct_named_thing(guess: str, canonical: str) -> bool:
+    """True when a fuzzy hit is a different title, not a typo/truncation.
+
+    Trigram similarity happily merges a name into a superset of its own
+    words: "karuppu" vs "karuppu pulsar" scores ~0.53 and clears the 0.45
+    floor, yet they are two different films - the shorter one ended up
+    hidden inside the longer, wearing the longer one's name. Guard it by
+    WORDS, not characters: when one title's tokens are a strict subset of
+    the other's AND the short side is one or two words, an added word is a
+    new identity ("vikram" -> "vikram vedha", "iron man" -> "iron man 3").
+
+    Dropping a trailing word from a LONG title ("spider man no way" for
+    "spider man no way home") is a real truncation and must still merge,
+    so the guard only fires when the shorter side is <= 2 tokens. A same-
+    word completion ("swat" -> "swati") is not a subset at the token level
+    and is untouched.
+    """
+    g = frozenset(guess.split())
+    c = frozenset(canonical.split())
+    if g == c or not (g <= c or c <= g):
+        return False
+    return min(len(g), len(c)) <= 2
+
+
 async def resolve_title(session: AsyncSession, parsed: ParsedMedia) -> Title:
     guess = parsed.title_guess.lower().strip()
     # Season is carried through every lookup: name matching alone must
@@ -31,6 +55,10 @@ async def resolve_title(session: AsyncSession, parsed: ParsedMedia) -> Title:
             get_settings().fuzzy_threshold,
             parsed.season,
         )
+        # A fuzzy hit that is only a word-superset/subset of the guess is a
+        # different title; fall through to create the guess as its own row.
+        if title is not None and _distinct_named_thing(guess, title.canonical_title):
+            title = None
     if title is not None:
         await titles_repo.merge_metadata(
             session,
