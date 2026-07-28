@@ -806,6 +806,20 @@ def build_title(
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
+def results_photo_url(page: SearchPage) -> str | None:
+    """Poster to send the results card as a photo, or None to send text.
+
+    Only a LONE hit qualifies: build_results opens a single result straight
+    into its detail card (no list), so there is no text results-list that a
+    photo would have to cross-edit into. A multi-result list stays text -
+    ten posters cannot share one card, and Telegram cannot edit a text
+    message into a photo one anyway.
+    """
+    if page.total == 1 and len(page.results) == 1:
+        return page.results[0].poster_url
+    return None
+
+
 def build_results(page: SearchPage, page_size: int) -> tuple[str, InlineKeyboardMarkup]:
     """Results message + keyboard. Caller guarantees page.results non-empty.
 

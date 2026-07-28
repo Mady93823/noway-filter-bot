@@ -39,6 +39,9 @@ class TitleResult:
     languages: tuple[str, ...]
     variants: tuple[FileVariant, ...]
     season: int | None = None
+    # Stored TMDB poster (worker/enrich.py). None until enriched, or when
+    # TMDB had no match. Read here, never fetched - no live call in search.
+    poster_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -205,6 +208,7 @@ async def search(
                 languages=tuple(title.languages),
                 variants=variants,
                 season=title.season,
+                poster_url=title.poster_url,
             )
         )
 

@@ -121,9 +121,26 @@ def register_search_handlers(app: Client) -> None:
                 cache.conversation_scope(message.chat.id, message.from_user.id), used
             )
             text, keyboard = ui.build_results(page, get_settings().search_page_size)
-            sent = await message.reply_text(
-                text, parse_mode=ParseMode.HTML, reply_markup=keyboard, quote=True
-            )
+            # A lone hit with a stored poster goes out as a photo card; its
+            # in-view chip/page updates edit the caption (see _on_title). A
+            # dead poster URL must never break search, so fall back to text.
+            poster = ui.results_photo_url(page)
+            sent = None
+            if poster:
+                try:
+                    sent = await message.reply_photo(
+                        poster,
+                        caption=text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=keyboard,
+                        quote=True,
+                    )
+                except Exception as exc:
+                    logger.warning("poster send failed (%s); text fallback", exc)
+            if sent is None:
+                sent = await message.reply_text(
+                    text, parse_mode=ParseMode.HTML, reply_markup=keyboard, quote=True
+                )
             # In a group the card is temporary; the file itself is
             # delivered in PM and stays there.
             await expire_in_group(message, sent)

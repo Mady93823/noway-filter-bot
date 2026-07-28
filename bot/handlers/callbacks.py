@@ -130,9 +130,17 @@ def register_callback_handlers(app: Client) -> None:
             result, cursor, language=language, quality=quality, page=variant_page
         )
         try:
-            await callback.edit_message_text(
-                text, parse_mode=ParseMode.HTML, reply_markup=keyboard
-            )
+            # A lone-hit card sent with a poster is a PHOTO message; its
+            # chip/page updates edit the caption, since a photo message has
+            # no text to edit (and cannot be turned into one).
+            if callback.message and callback.message.photo:
+                await callback.edit_message_caption(
+                    text, parse_mode=ParseMode.HTML, reply_markup=keyboard
+                )
+            else:
+                await callback.edit_message_text(
+                    text, parse_mode=ParseMode.HTML, reply_markup=keyboard
+                )
         except MessageNotModified:
             pass
         await callback.answer()
