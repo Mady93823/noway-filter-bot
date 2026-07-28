@@ -286,6 +286,18 @@ async def set_enrichment(
     )
 
 
+async def count_enrichable(session: AsyncSession) -> int:
+    """How many titles a full sweep would re-queue ('skip' + past 'nomatch')."""
+    return (
+        await session.scalar(
+            select(func.count())
+            .select_from(Title)
+            .where(Title.enrich_status.in_(("skip", "nomatch")))
+        )
+        or 0
+    )
+
+
 async def mark_all_pending(session: AsyncSession) -> int:
     """Flip every not-yet-matched title back to 'pending' for a full sweep.
 

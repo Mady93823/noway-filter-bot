@@ -30,6 +30,7 @@ from shared.db.repos import filters as filters_repo
 from shared.db.repos import groups as groups_repo
 from shared.db.repos import progress as progress_repo
 from shared.db.repos import stats as stats_repo
+from shared.db.repos import titles as titles_repo
 from shared.db.repos import users as users_repo
 from shared.redis_client import get_redis
 from shared import reparse_state
@@ -48,6 +49,8 @@ _HELP_TEXT = (
     "▫️ <code>/reparse</code> — re-read every indexed filename with the "
     "current parser (fixes wrong titles; deletes nothing). "
     "<code>/reparse cancel</code> stops it\n"
+    "▫️ <code>/enrichall</code> — queue every title for a TMDB poster fetch "
+    "(run AFTER /reparse; the worker fetches in the background)\n"
     "▫️ <code>/clear_index</code> — wipe ALL indexed titles/files (asks to confirm)\n"
     "▫️ <code>/help</code> — this list\n\n"
     "🔨 <b>Moderation</b>\n"
@@ -377,6 +380,59 @@ def register_admin_handlers(app: Client) -> None:
              "nothing.\n\n" if dry_run else "🔁 <b>Re-parse queued.</b>\n\n")
             + "The worker starts it within a minute. Send /stats to watch the "
             "percentage; <code>/reparse cancel</code> stops it.",
+            parse_mode=ParseMode.HTML,
+        )
+        await callback.answer("Queued")
+
+    @app.on_message(admin_pm & filters.command("enrichall"))
+    async def _on_enrichall(client: Client, message: Message) -> None:
+        if not get_settings().enrich_enabled:
+            await message.reply_text(
+                "TMDB enrichment is off — no TMDB_BEARER/TMDB_API_KEY set. "
+                "Add a credential and restart the worker first."
+            )
+            return
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            eligible = await titles_repo.count_enrichable(session)
+        if not eligible:
+            await message.reply_text(
+                "Nothing to queue: every title is already enriched or pending."
+            )
+            return
+        await message.reply_text(
+            "🖼 <b>Queue the whole index for TMDB posters?</b>\n\n"
+            f"Flips <b>{eligible:,}</b> titles (never-tried + past misses) back "
+            "to <i>pending</i>. The worker then fetches posters in the "
+            "background — no live call in search, artwork deduped by TMDB id.\n\n"
+            "<blockquote>⚠️ Run <b>/reparse first</b> if you haven't: it merges "
+            "article variants and removes empty titles, so the sweep doesn't "
+            "fetch posters for rows about to be deleted.\n"
+            "⏳ ~one fetch per title over hours; watch the worker log.</blockquote>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton("🖼 Queue it", callback_data="en:go")],
+                    [InlineKeyboardButton("✖️ Cancel", callback_data="en:no")],
+                ]
+            ),
+        )
+
+    @app.on_callback_query(filters.regex(r"^en:(go|no)$") & filters.user(admin_ids))
+    async def _on_enrichall_confirm(client: Client, callback: CallbackQuery) -> None:
+        if callback.data == "en:no":
+            await callback.edit_message_text("Cancelled. Nothing queued. ✅")
+            await callback.answer()
+            return
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            async with session.begin():
+                flipped = await titles_repo.mark_all_pending(session)
+        logger.info("enrichall queued %s titles by admin %s", flipped, callback.from_user.id)
+        await callback.edit_message_text(
+            f"🖼 <b>Queued {flipped:,} titles.</b>\n\n"
+            "The worker fetches posters in the background. Poster saves show in "
+            "its log; enriched titles start showing artwork in search.",
             parse_mode=ParseMode.HTML,
         )
         await callback.answer("Queued")
