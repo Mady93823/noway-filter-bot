@@ -59,6 +59,17 @@ class Title(Base):
             postgresql_using="gin",
             postgresql_ops={"canonical_title": "gin_trgm_ops"},
         ),
+        CheckConstraint(
+            "enrich_status IN ('pending', 'done', 'nomatch', 'skip')",
+            name="ck_titles_enrich_status",
+        ),
+        # Partial index the enricher polls on - stays O(pending) as the
+        # 'done'/'skip' rows grow into the millions.
+        Index(
+            "ix_titles_enrich_pending",
+            "id",
+            postgresql_where=text("enrich_status = 'pending'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -73,6 +84,16 @@ class Title(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # Offline TMDB enrichment (worker/enrich.py). enrich_status drives it:
+    # 'pending' newly resolved -> 'done' (poster/tmdb_id set) or 'nomatch'
+    # (searched, absent). 'skip' is every title that predates enrichment -
+    # only upcoming titles are ever fetched. Never read live in search.
+    tmdb_id: Mapped[int | None] = mapped_column(BigInteger)
+    poster_url: Mapped[str | None] = mapped_column(Text)
+    enrich_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'pending'")
+    )
+    enriched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class File(Base):

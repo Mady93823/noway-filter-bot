@@ -18,6 +18,7 @@ from shared.ratelimit import install_governor
 from shared.db.repos import progress as progress_repo
 from shared import reparse_state
 from shared.telegram.client import create_client
+from worker import enrich
 from worker.backfill import run_backfill
 from worker.live import register_live_handlers
 from worker.reparse import reparse
@@ -191,6 +192,36 @@ async def reparse_dispatcher(client: Client) -> None:
         await asyncio.sleep(interval)
 
 
+async def enrich_dispatcher() -> None:
+    """Background TMDB poster fetch for newly-resolved titles.
+
+    Decoupled from the index coroutine on purpose: the API call happens
+    here, never inside index_message, so the indexing/search path stays
+    free of any live third-party call (golden rule 1). Idles at a longer
+    interval when there is nothing pending, so a caught-up worker barely
+    touches TMDB.
+    """
+    settings = get_settings()
+    if not settings.enrich_enabled:
+        logger.info("TMDB enrichment disabled (no TMDB credential) - not starting")
+        return
+    idle_interval = max(settings.enrich_interval, 60)
+    async with enrich.make_client(settings) as http:
+        while True:
+            try:
+                processed = await enrich.run_batch(http, settings)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Enrichment is best-effort cosmetics; a failure must never
+                # take the worker down or spam admins. Log, back off, retry.
+                logger.warning("enrich batch failed: %s", exc)
+                processed = 0
+            await asyncio.sleep(
+                settings.enrich_interval if processed else idle_interval
+            )
+
+
 async def run() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -210,6 +241,7 @@ async def run() -> None:
     await _reconcile_reparse()
     dispatcher = asyncio.create_task(job_dispatcher(app))
     reparser = asyncio.create_task(reparse_dispatcher(app))
+    enricher = asyncio.create_task(enrich_dispatcher())
     try:
         await idle()
     except Exception as exc:
@@ -225,6 +257,7 @@ async def run() -> None:
     finally:
         dispatcher.cancel()
         reparser.cancel()
+        enricher.cancel()
         await stop_log_drainer()
         health.close()
         await app.stop()

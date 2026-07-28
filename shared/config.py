@@ -38,6 +38,21 @@ class Settings(DbSettings):
     source_channel_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
     admin_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
 
+    # --- TMDB offline enrichment (worker only; never a live search-path call) ---
+    # v4 Read Access Token (preferred, sent as Bearer) or v3 API key. Leave
+    # both blank to switch enrichment off entirely.
+    tmdb_bearer: str = ""
+    tmdb_api_key: str = ""
+    tmdb_language: str = "en-US"
+    # Titles fetched per enricher batch, and the pause between batches. Kept
+    # small/gentle: TMDB is generous but this is a background trickle, not a race.
+    enrich_batch_size: int = Field(default=20, ge=1, le=100)
+    enrich_interval: int = Field(default=30, ge=5)
+    # A TMDB hit is accepted only when its title is at least this similar to
+    # our guess - blocks "gunche" -> "Colony" style wrong first results the
+    # no-year fallback can return.
+    tmdb_min_similarity: float = Field(default=0.6, gt=0, le=1)
+
     backfill_batch_size: int = Field(default=100, ge=1, le=200)
     base_batch_delay: float = Field(default=2.5, gt=0)
     # How often the worker DMs indexing progress to admins ("indexed x/x").
@@ -91,6 +106,11 @@ class Settings(DbSettings):
     # either changes state. Edge-triggered, so this is only the detection
     # lag, not an alert cadence.
     watchdog_interval: int = Field(default=30, ge=5)
+
+    @property
+    def enrich_enabled(self) -> bool:
+        """Enrichment runs only when a TMDB credential is configured."""
+        return bool(self.tmdb_bearer or self.tmdb_api_key)
 
     @field_validator("source_channel_ids", "admin_ids", mode="before")
     @classmethod

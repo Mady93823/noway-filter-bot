@@ -4,7 +4,7 @@ Fuzzy matching uses pg_trgm: the % operator rides the GIN index to
 prefilter candidates, then similarity() enforces our stricter threshold.
 """
 
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -248,6 +248,43 @@ async def get_or_create(
     )
     assert result is not None  # conflict implies the row exists
     return result
+
+
+async def list_pending_enrichment(session: AsyncSession, limit: int) -> list[Title]:
+    """Titles awaiting a TMDB fetch, oldest first. Rides ix_titles_enrich_pending."""
+    query = (
+        select(Title)
+        .where(Title.enrich_status == "pending")
+        .order_by(Title.id)
+        .limit(limit)
+    )
+    return list((await session.scalars(query)).all())
+
+
+async def set_enrichment(
+    session: AsyncSession,
+    title_id: int,
+    *,
+    status: str,
+    tmdb_id: int | None = None,
+    poster_url: str | None = None,
+) -> None:
+    """Record the outcome of one enrichment attempt on a title.
+
+    status is 'done' (matched) or 'nomatch' (searched, absent). A transient
+    network error is NOT written - the row simply stays 'pending' for the
+    next sweep.
+    """
+    await session.execute(
+        update(Title)
+        .where(Title.id == title_id)
+        .values(
+            enrich_status=status,
+            tmdb_id=tmdb_id,
+            poster_url=poster_url,
+            enriched_at=func.now(),
+        )
+    )
 
 
 async def merge_metadata(
