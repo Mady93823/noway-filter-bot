@@ -1,8 +1,11 @@
 # Backup & VPS-migration runbook
 
 Hourly Postgres dump + config bundle to Google Drive via rclone.
-Retention: 7 days on Drive and locally. Redis is NOT backed up — it holds
-only rebuildable cache (search results, cursors).
+Retention: **24 hours**, and **Drive-only** — the local dump is deleted right
+after a successful upload so nothing accumulates on the VPS disk. If rclone
+isn't configured the copy is kept locally (and pruned to 24h) as a fallback,
+so a broken Drive setup never means zero backups. Redis is NOT backed up — it
+holds only rebuildable cache (search results, cursors).
 
 ## What gets backed up
 
@@ -35,11 +38,13 @@ crontab -e
 ```
 
 Manual run anytime: `./scripts/backup.sh`
-Overrides via env: `RCLONE_REMOTE`, `RETENTION_DAYS`, `BACKUP_DIR`,
-`PG_SERVICE/PG_USER/PG_DB`.
+Overrides via env: `RCLONE_REMOTE`, `RETENTION_HOURS` (default 24), `BACKUP_DIR`,
+`PG_SERVICE/PG_USER/PG_DB`. (Legacy `RETENTION_DAYS` still works — it's
+converted to hours.)
 
-Retention math: hourly × 7 days = max 168 dumps. A lakh-scale index dump
-(custom format, compressed) is tens of MB — comfortably inside free Drive.
+Retention math: hourly × 24h = max ~24 dumps on Drive at once. A lakh-scale
+index dump (custom format, compressed) is tens of MB — comfortably inside free
+Drive, and the VPS keeps ~nothing because local staging is wiped each run.
 
 ## Monthly VPS switch runbook
 
