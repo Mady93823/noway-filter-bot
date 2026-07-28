@@ -215,7 +215,11 @@ async def enrich_dispatcher() -> None:
             except Exception as exc:
                 # Enrichment is best-effort cosmetics; a failure must never
                 # take the worker down or spam admins. Log, back off, retry.
-                logger.warning("enrich batch failed: %s", exc)
+                # Type included: a reset httpx error stringifies to "", so the
+                # bare message alone told us nothing.
+                logger.warning(
+                    "enrich batch failed: %s: %s", type(exc).__name__, exc
+                )
                 processed = 0
             # A full batch means a backlog is still draining (the whole-index
             # sweep) - pause only briefly. A short/empty batch means caught up

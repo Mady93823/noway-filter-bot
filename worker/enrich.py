@@ -179,9 +179,25 @@ async def run_batch(client: httpx.AsyncClient, settings: Settings) -> int:
         async with semaphore:
             return title, await enrich_title(client, title, settings)
 
-    # gather propagates the first network error, aborting the whole batch -
-    # nothing is written, every title stays 'pending', the dispatcher backs off.
-    outcomes = await asyncio.gather(*(_fetch(title) for title in pending))
+    # return_exceptions: one title's network reset must not throw away the
+    # other 19 fetches. The failed ones simply stay 'pending' for the next
+    # sweep; only if EVERY title failed do we re-raise so the dispatcher backs
+    # off (a genuinely down link, not one flaky connection).
+    settled = await asyncio.gather(
+        *(_fetch(title) for title in pending), return_exceptions=True
+    )
+    outcomes = [item for item in settled if not isinstance(item, BaseException)]
+    errors = [item for item in settled if isinstance(item, BaseException)]
+    if errors and not outcomes:
+        raise errors[0]
+    if errors:
+        logger.warning(
+            "enrich: %s/%s titles failed this batch (stay pending): %s: %s",
+            len(errors),
+            len(pending),
+            type(errors[0]).__name__,
+            errors[0],
+        )
 
     async with session_factory() as session:
         async with session.begin():
