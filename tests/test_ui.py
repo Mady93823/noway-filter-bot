@@ -430,6 +430,30 @@ def test_lone_hit_skips_the_list():
     assert f"t:1:{encode_cursor(page.qhash, 0)}:hin" in data
 
 
+def test_one_rendered_result_opens_directly_despite_inflated_total():
+    """total=2 but only one title has files (an orphan the reparse deletes).
+
+    The user typed an exact title and must land on the card, not a "2
+    matches" list showing a single row - that mismatch is the confusing case.
+    """
+    page = _page()
+    inflated = SearchPage(
+        results=page.results[:1],  # only one real, renderable match
+        total=2,  # a second, empty title still counted in the id list
+        next_cursor=None,
+        qhash=page.qhash,
+        offset=0,
+        query=page.query,
+        strong_total=2,
+    )
+    text, keyboard = ui.build_results(inflated, page_size=10)
+    data = [b.callback_data for row in keyboard.inline_keyboard for b in row]
+
+    assert "Tap a title" not in text
+    assert "match" not in text  # no "2 matches" counter
+    assert [d for d in data if d.startswith("get:")] == ["get:11", "get:12"]
+
+
 def test_first_page_has_no_prev():
     page = _page()
     first = SearchPage(

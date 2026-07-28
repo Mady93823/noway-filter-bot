@@ -515,6 +515,12 @@ def _title_line(index: int, result: TitleResult) -> str:
     # "there is something to choose from in here". An untagged title says
     # nothing useful with "🎧 language n/a", so that half is simply gone.
     meta = [f"💎 {_files_word(len(result.variants))}"]
+    # Resolutions up front so the row says what is actually inside before
+    # the user commits a tap - "4 files" alone does not tell them whether
+    # the 1080p they want is one of them.
+    resolutions = _variant_resolutions(result)
+    if resolutions:
+        meta.append("📺 " + ", ".join(resolutions))
     if result.languages:
         meta.append(f"🎧 {escape(_languages_line(result.languages))}")
     # The meta line is indented under its keycap so the eye reads each
@@ -994,7 +1000,12 @@ def build_results(page: SearchPage, page_size: int) -> tuple[str, InlineKeyboard
     pages = max(1, ceil(page.total / page_size))
     cursor = encode_cursor(page.qhash, page.offset) if page.qhash else ""
 
-    if page.total == 1 and len(page.results) == 1:
+    # A single rendered result on a single first page opens straight into its
+    # card - a one-item menu is pure friction. Keyed on the RENDERED results,
+    # not page.total: an empty/orphan title (one the reparse will delete) can
+    # inflate the raw count to 2 while only one real match actually has files,
+    # which is exactly the "2 matches, one card" confusion users hit.
+    if len(page.results) == 1 and page.offset == 0 and page.next_cursor is None:
         return build_title(page.results[0], cursor, show_back=False)
 
     # Where the real matches stop. None (no ladder ran) means "all real".
