@@ -633,6 +633,56 @@ def _chip_rows(chips: list[InlineKeyboardButton]) -> list[list[InlineKeyboardBut
     return [chips[i : i + CHIPS_PER_ROW] for i in range(0, len(chips), CHIPS_PER_ROW)]
 
 
+def _season_chips(
+    result: TitleResult,
+    cursor: str,
+    seasons: tuple[tuple[int, int], ...],
+) -> list[list[InlineKeyboardButton]]:
+    """Season switcher for a show whose other seasons are on this page.
+
+    seasons is (season_number, title_id) for every sibling season of this
+    show, including the one being viewed. Each is a separate title row, so
+    switching just opens the sibling's card via its plain t: callback -
+    which is why the siblings must come from the SAME cached page (the
+    caller guarantees it). The active season is inert (already open).
+    """
+    if len(seasons) < 2:
+        return []
+    chips: list[InlineKeyboardButton] = []
+    for season, title_id in sorted(seasons):
+        active = title_id == result.title_id
+        chips.append(
+            InlineKeyboardButton(
+                f"🟢 S{season}" if active else f"📺 S{season}",
+                # Opening a sibling resets its own filters, so the active
+                # one is a no-op rather than a pointless reload.
+                callback_data=NOOP_CALLBACK if active else f"t:{title_id}:{cursor}",
+            )
+        )
+    return _chip_rows(chips)
+
+
+def season_siblings(
+    results: tuple[TitleResult, ...], result: TitleResult
+) -> tuple[tuple[int, int], ...]:
+    """(season, title_id) for every season of this show among `results`.
+
+    Empty unless the title is a series AND another season of the same show
+    is on the same page - a switcher with one entry is not a switcher, and
+    a movie has no seasons. Same-page is deliberate: the switch reuses the
+    sibling's plain t: callback, which only resolves within the cached page.
+    """
+    if result.season is None:
+        return ()
+    siblings = tuple(
+        (other.season, other.title_id)
+        for other in results
+        if other.season is not None
+        and other.canonical_title == result.canonical_title
+    )
+    return siblings if len(siblings) > 1 else ()
+
+
 def _episode_chips(
     result: TitleResult,
     cursor: str,
@@ -792,6 +842,7 @@ def build_title(
     quality: str | None = None,
     page: int = 0,
     episode: int | None = None,
+    seasons: tuple[tuple[int, int], ...] = (),
 ) -> tuple[str, InlineKeyboardMarkup]:
     """One title's file picker: filtered by episode/audio/resolution, one
     page at a time.
@@ -799,6 +850,8 @@ def build_title(
     cursor is always the page this title was opened from - the chips need
     it even when there is no results list to go back to (a lone hit).
     episode is an INDEX into _variant_episodes(result); None means "all".
+    seasons is (season, title_id) for this show's sibling seasons on the
+    same page; a switcher row is drawn when there is more than one.
     """
     episodes = _variant_episodes(result)
     active_episode = (
@@ -861,9 +914,10 @@ def build_title(
     # already said it - repeating it on each button only eats the space
     # the episode/quality labels need.
     show_languages = len({variant.languages for variant in shown}) > 1
-    # Episode row first: for a series it is the primary axis, the one that
-    # answers "which episode" before "which quality".
-    rows = _episode_chips(result, cursor, episode, language, quality)
+    # Season switcher on top (which season), then episode (which episode),
+    # then quality/audio (which copy) - broadest axis to narrowest.
+    rows = _season_chips(result, cursor, seasons)
+    rows += _episode_chips(result, cursor, episode, language, quality)
     rows += _quality_chips(result, cursor, quality, language, episode)
     rows += _language_chips(result, cursor, language, quality, episode)
     rows += [[_variant_button(variant, show_languages)] for variant in shown]

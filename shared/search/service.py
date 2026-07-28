@@ -42,6 +42,9 @@ class TitleResult:
     # Stored TMDB poster (worker/enrich.py). None until enriched, or when
     # TMDB had no match. Read here, never fetched - no live call in search.
     poster_url: str | None = None
+    # The identity key, kept so the UI can group sibling seasons of one
+    # show ("wednesday" S1/S2 share a canonical_title, differ on season).
+    canonical_title: str = ""
 
 
 @dataclass(frozen=True)
@@ -209,6 +212,7 @@ async def search(
                 variants=variants,
                 season=title.season,
                 poster_url=title.poster_url,
+                canonical_title=title.canonical_title,
             )
         )
 

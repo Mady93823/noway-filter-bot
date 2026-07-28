@@ -156,7 +156,18 @@ async def run_batch(client: httpx.AsyncClient, settings: Settings) -> int:
                     tmdb_id=outcome.tmdb_id,
                     poster_url=outcome.poster_url,
                 )
-        logger.debug(
-            "enriched title %s (%r) -> %s", title.id, title.canonical_title, outcome.status
-        )
+        if outcome.status == STATUS_DONE and outcome.poster_url:
+            logger.info(
+                "enriched title %s (%r): poster saved %s",
+                title.id,
+                title.canonical_title,
+                outcome.poster_url,
+            )
+        else:
+            logger.debug(
+                "enriched title %s (%r) -> %s",
+                title.id,
+                title.canonical_title,
+                outcome.status,
+            )
     return len(pending)

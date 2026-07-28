@@ -129,9 +129,13 @@ def register_callback_handlers(app: Client) -> None:
             await callback.answer(ui.expired_text(), show_alert=True)
             return
 
+        # Sibling seasons on this same page power the season switcher; they
+        # must come from page.results because switching reuses their t:
+        # callback, which only resolves inside the cached page.
+        seasons = ui.season_siblings(page.results, result)
         text, keyboard = ui.build_title(
             result, cursor, language=language, quality=quality, page=variant_page,
-            episode=episode,
+            episode=episode, seasons=seasons,
         )
         try:
             # A lone-hit card sent with a poster is a PHOTO message; its
