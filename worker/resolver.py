@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.config import get_settings
 from shared.db.models import Title
 from shared.db.repos import titles as titles_repo
-from shared.parsing.filename import ParsedMedia
+from shared.parsing.filename import ParsedMedia, strip_leading_article
 
 
 def _display_from_guess(guess: str) -> str:
@@ -44,20 +44,24 @@ def _distinct_named_thing(guess: str, canonical: str) -> bool:
 
 async def resolve_title(session: AsyncSession, parsed: ParsedMedia) -> Title:
     guess = parsed.title_guess.lower().strip()
+    # The MATCHING key drops a leading the/a/an so "the wicked within" and
+    # "a wicked within" resolve to one canonical instead of fuzzy-colliding
+    # into whichever was indexed first. The display keeps the full name.
+    canonical = strip_leading_article(guess)
     # Season is carried through every lookup: name matching alone must
     # never merge two seasons of one show into a single title.
-    title = await titles_repo.find_exact(session, guess, parsed.year, parsed.season)
+    title = await titles_repo.find_exact(session, canonical, parsed.year, parsed.season)
     if title is None:
         title = await titles_repo.find_fuzzy(
             session,
-            guess,
+            canonical,
             parsed.year,
             get_settings().fuzzy_threshold,
             parsed.season,
         )
         # A fuzzy hit that is only a word-superset/subset of the guess is a
         # different title; fall through to create the guess as its own row.
-        if title is not None and _distinct_named_thing(guess, title.canonical_title):
+        if title is not None and _distinct_named_thing(canonical, title.canonical_title):
             title = None
     if title is not None:
         await titles_repo.merge_metadata(
@@ -69,7 +73,7 @@ async def resolve_title(session: AsyncSession, parsed: ParsedMedia) -> Title:
         return title
     return await titles_repo.get_or_create(
         session,
-        canonical=guess,
+        canonical=canonical,
         display=_display_from_guess(guess),
         year=parsed.year,
         languages=list(parsed.languages),

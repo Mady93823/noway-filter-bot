@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.config import get_settings
 from shared.db.repos import files as files_repo
 from shared.db.repos import titles as titles_repo
+from shared.parsing.filename import strip_leading_article
 from shared.search import cache
 from shared.search.query import normalize_query, parse_query
 
@@ -113,7 +114,7 @@ async def suggest(
         return ()
     titles = await titles_repo.nearest_titles(
         session,
-        parsed.title_guess,
+        strip_leading_article(parsed.title_guess),
         floor=get_settings().suggest_threshold,
         limit=limit,
     )
@@ -167,7 +168,9 @@ async def search(
         offset = 0
         title_ids, strong = await titles_repo.search_title_ids(
             session,
-            guess=parsed.title_guess,
+            # Same article-stripping the resolver keys on, so "the wicked
+            # within" exact-matches the canonical "wicked within".
+            guess=strip_leading_article(parsed.title_guess),
             year=parsed.year,
             languages=parsed.languages,
             threshold=settings.search_fuzzy_threshold,

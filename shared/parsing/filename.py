@@ -100,6 +100,27 @@ def tokenize(text: str) -> list[str]:
     return [token for token in _SPLIT_RE.split(text.lower()) if token]
 
 
+# Leading articles collapsed for the MATCHING key only. "the wicked within",
+# "a wicked within" and "wicked within" are the same film wearing different
+# articles; keying them all to "wicked within" makes them resolve by exact
+# match instead of fuzzy guesswork, and makes a search for the real name
+# land instead of trigram-scattering. The display title keeps its article.
+_LEADING_ARTICLES = frozenset({"the", "a", "an"})
+
+
+def strip_leading_article(title: str) -> str:
+    """Drop a leading the/a/an from a title's matching key.
+
+    Never empties a title: a bare "The" or "A" is a real one-word name
+    ("A", the 2018 film) and is left untouched. Only a leading article in
+    front of MORE title is removed.
+    """
+    parts = title.split()
+    if len(parts) > 1 and parts[0] in _LEADING_ARTICLES:
+        return " ".join(parts[1:])
+    return title
+
+
 def _extract_series(tokens: list[str], consumed: list[bool]) -> tuple[
     int | None, str | None, int | None
 ]:

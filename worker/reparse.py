@@ -30,7 +30,7 @@ from sqlalchemy import delete, func, select
 
 from shared.db.engine import dispose_engine, get_session_factory
 from shared.db.models import File, Title
-from shared.parsing.filename import parse_media
+from shared.parsing.filename import parse_media, strip_leading_article
 from worker.resolver import resolve_title
 
 logger = logging.getLogger(__name__)
@@ -79,12 +79,19 @@ async def _repair_display_titles(
                 for title in titles:
                     last_id = title.id
                     seen += 1
-                    if title.display_title.lower().startswith(
-                        title.canonical_title.lower()
-                    ):
+                    # The canonical is article-stripped, so a legit display
+                    # ("The Wicked Within") won't start with it directly -
+                    # strip the display's own leading article before the
+                    # check, or every "The …"/"A …" title would be reset.
+                    display_key = strip_leading_article(title.display_title.lower())
+                    if display_key.startswith(title.canonical_title.lower()):
                         continue
                     renamed += 1
                     if not dry_run:
+                        # Only reached when the display is debris a fuzzy
+                        # match dragged in ("Ep 10 Bang Bang"); the canonical
+                        # is the clean fallback. A real "The …" display was
+                        # already kept by the article-aware check above.
                         title.display_title = title.canonical_title.title()
                 if dry_run:
                     await session.rollback()
