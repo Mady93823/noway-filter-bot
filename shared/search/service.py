@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.config import get_settings
 from shared.db.repos import files as files_repo
+from shared.db.repos import posters as posters_repo
 from shared.db.repos import titles as titles_repo
 from shared.parsing.filename import strip_leading_article
 from shared.search import cache
@@ -185,6 +186,11 @@ async def search(
     page_ids = title_ids[offset : offset + settings.search_page_size]
     titles = await titles_repo.load_titles_ordered(session, page_ids)
     variants_by_title = await files_repo.files_for_titles(session, page_ids)
+    # Posters are deduped in their own table (keyed by tmdb_id); resolve the
+    # URL for just this page's titles in one query, never a live TMDB call.
+    poster_by_tmdb = await posters_repo.poster_urls_for(
+        session, [t.tmdb_id for t in titles if t.tmdb_id is not None]
+    )
 
     results: list[TitleResult] = []
     for title in titles:
@@ -214,7 +220,7 @@ async def search(
                 languages=tuple(title.languages),
                 variants=variants,
                 season=title.season,
-                poster_url=title.poster_url,
+                poster_url=poster_by_tmdb.get(title.tmdb_id),
                 canonical_title=title.canonical_title,
             )
         )

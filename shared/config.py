@@ -48,6 +48,11 @@ class Settings(DbSettings):
     # small/gentle: TMDB is generous but this is a background trickle, not a race.
     enrich_batch_size: int = Field(default=20, ge=1, le=100)
     enrich_interval: int = Field(default=30, ge=5)
+    # How many TMDB fetches run in parallel inside one batch, and the short
+    # pause between batches while a backlog is still draining (the bulk
+    # sweep over the whole index). Idle catch-up still uses enrich_interval.
+    enrich_concurrency: int = Field(default=6, ge=1, le=20)
+    enrich_busy_interval: float = Field(default=2.0, ge=0)
     # A TMDB hit is accepted only when its title is at least this similar to
     # our guess - blocks "gunche" -> "Colony" style wrong first results the
     # no-year fallback can return.

@@ -12,6 +12,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -33,6 +34,37 @@ class JobStatus(StrEnum):
     PAUSED = "paused"
     COMPLETED = "completed"
     ERRORED = "errored"
+
+
+class Poster(Base):
+    """One row per distinct TMDB entity, keyed by its tmdb_id.
+
+    Deduped on purpose: every season of a series and every size/quality
+    variant of a film resolves to the same tmdb_id, so the artwork and
+    metadata are stored ONCE here and pointed at from titles.tmdb_id,
+    instead of the same URL landing on hundreds of thousands of rows.
+    Populated OFFLINE by worker/enrich.py; never written from search.
+    """
+
+    __tablename__ = "posters"
+    __table_args__ = (
+        CheckConstraint(
+            "media_type IN ('movie', 'tv')",
+            name="ck_posters_media_type",
+        ),
+    )
+
+    tmdb_id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=False
+    )
+    media_type: Mapped[str] = mapped_column(Text, nullable=False)
+    # poster_url may be None: TMDB knows the title but has no artwork yet.
+    poster_url: Mapped[str | None] = mapped_column(Text)
+    overview: Mapped[str | None] = mapped_column(Text)
+    vote: Mapped[float | None] = mapped_column(Float)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class Title(Base):
@@ -85,11 +117,16 @@ class Title(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     # Offline TMDB enrichment (worker/enrich.py). enrich_status drives it:
-    # 'pending' newly resolved -> 'done' (poster/tmdb_id set) or 'nomatch'
-    # (searched, absent). 'skip' is every title that predates enrichment -
-    # only upcoming titles are ever fetched. Never read live in search.
-    tmdb_id: Mapped[int | None] = mapped_column(BigInteger)
-    poster_url: Mapped[str | None] = mapped_column(Text)
+    # 'pending' newly resolved -> 'done' (tmdb_id set) or 'nomatch' (searched,
+    # absent). Never read live in search. The poster itself lives once in the
+    # posters table, keyed by tmdb_id, so seasons of one show and the size
+    # variants of one film all share a single artwork row instead of copying
+    # the same URL onto every title (docs.md: dedup by tmdb_id).
+    tmdb_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("posters.tmdb_id", ondelete="SET NULL"),
+        index=True,
+    )
     enrich_status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=text("'pending'")
     )

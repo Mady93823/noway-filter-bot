@@ -2,8 +2,9 @@
 
 Runs entirely OUTSIDE the search/index hot path (CLAUDE.md golden rule 1):
 the worker polls titles the resolver marked 'pending', fetches from TMDB in
-a gentle background trickle, and writes the poster URL onto the title. Search
-later reads that stored URL - it never calls TMDB itself.
+a background trickle, writes the artwork once into the deduped posters table,
+and points the title at it by tmdb_id. Search later reads that stored poster
+through the join - it never calls TMDB itself.
 
 Match method, proven against a 200-file channel sample (see
 memory/tmdb-enrichment-findings.md):
@@ -19,6 +20,7 @@ and the next sweep retries it. Only a real answer ('done' with a match, or
 'nomatch' when TMDB genuinely has nothing) is committed.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -28,6 +30,7 @@ import httpx
 from shared.config import Settings
 from shared.db.engine import get_session_factory
 from shared.db.models import Title
+from shared.db.repos import posters as posters_repo
 from shared.db.repos import titles as titles_repo
 
 logger = logging.getLogger(__name__)
@@ -47,6 +50,10 @@ class EnrichResult:
     status: str
     tmdb_id: int | None = None
     poster_url: str | None = None
+    # Carried through to the posters row on a 'done'. None on a 'nomatch'.
+    media_type: str | None = None
+    overview: str | None = None
+    vote: float | None = None
 
 
 def media_type(title: Title) -> str:
@@ -58,6 +65,13 @@ def result_title(result: dict, media_type: str) -> str:
     """TMDB names the display field differently for movie vs tv."""
     key = "name" if media_type == "tv" else "title"
     return result.get(key) or ""
+
+
+def result_year(result: dict, media_type: str) -> int | None:
+    """Release year from TMDB's date field, or None when it is absent/blank."""
+    key = "first_air_date" if media_type == "tv" else "release_date"
+    head = (result.get(key) or "")[:4]
+    return int(head) if head.isdigit() else None
 
 
 def poster_url(poster_path: str | None) -> str | None:
@@ -77,13 +91,25 @@ def decide(title: Title, result: dict | None, min_similarity: float) -> EnrichRe
     """
     if result is None:
         return EnrichResult(STATUS_NOMATCH)
-    name = result_title(result, media_type(title))
+    mt = media_type(title)
+    name = result_title(result, mt)
     if not name or _similar(title.canonical_title, name) < min_similarity:
+        return EnrichResult(STATUS_NOMATCH)
+    # Year cross-check ("double check correct image"): when our year and
+    # TMDB's release year are BOTH known and differ by more than one, this is
+    # a different edition/remake wearing the same name - reject rather than
+    # store the wrong poster. A one-year slack absorbs the usual festival-vs-
+    # release date drift. Either year missing = no basis to reject.
+    ry = result_year(result, mt)
+    if title.year is not None and ry is not None and abs(title.year - ry) > 1:
         return EnrichResult(STATUS_NOMATCH)
     return EnrichResult(
         STATUS_DONE,
         tmdb_id=result.get("id"),
         poster_url=poster_url(result.get("poster_path")),
+        media_type=mt,
+        overview=result.get("overview") or None,
+        vote=result.get("vote_average"),
     )
 
 
@@ -134,8 +160,10 @@ async def enrich_title(
 async def run_batch(client: httpx.AsyncClient, settings: Settings) -> int:
     """Enrich one batch of pending titles. Returns how many were processed.
 
-    A network error aborts the batch (raised to the caller to back off);
-    the untouched titles simply stay 'pending' for the next sweep.
+    The TMDB fetches run concurrently (bounded by enrich_concurrency) so the
+    full-index sweep drains in hours, not days; the writes are then applied in
+    one transaction. A network error aborts the batch (raised to the caller to
+    back off); the untouched titles simply stay 'pending' for the next sweep.
     """
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -145,17 +173,38 @@ async def run_batch(client: httpx.AsyncClient, settings: Settings) -> int:
     if not pending:
         return 0
 
-    for title in pending:
-        outcome = await enrich_title(client, title, settings)
-        async with session_factory() as session:
-            async with session.begin():
+    semaphore = asyncio.Semaphore(settings.enrich_concurrency)
+
+    async def _fetch(title: Title) -> tuple[Title, EnrichResult]:
+        async with semaphore:
+            return title, await enrich_title(client, title, settings)
+
+    # gather propagates the first network error, aborting the whole batch -
+    # nothing is written, every title stays 'pending', the dispatcher backs off.
+    outcomes = await asyncio.gather(*(_fetch(title) for title in pending))
+
+    async with session_factory() as session:
+        async with session.begin():
+            for title, outcome in outcomes:
+                if outcome.status == STATUS_DONE and outcome.tmdb_id is not None:
+                    # Poster first: titles.tmdb_id is an FK, so its row must
+                    # exist before the title can point at it.
+                    await posters_repo.upsert_poster(
+                        session,
+                        tmdb_id=outcome.tmdb_id,
+                        media_type=outcome.media_type or media_type(title),
+                        poster_url=outcome.poster_url,
+                        overview=outcome.overview,
+                        vote=outcome.vote,
+                    )
                 await titles_repo.set_enrichment(
                     session,
                     title.id,
                     status=outcome.status,
-                    tmdb_id=outcome.tmdb_id,
-                    poster_url=outcome.poster_url,
+                    tmdb_id=outcome.tmdb_id if outcome.status == STATUS_DONE else None,
                 )
+
+    for title, outcome in outcomes:
         if outcome.status == STATUS_DONE and outcome.poster_url:
             logger.info(
                 "enriched title %s (%r): poster saved %s",

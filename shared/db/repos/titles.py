@@ -267,13 +267,13 @@ async def set_enrichment(
     *,
     status: str,
     tmdb_id: int | None = None,
-    poster_url: str | None = None,
 ) -> None:
     """Record the outcome of one enrichment attempt on a title.
 
-    status is 'done' (matched) or 'nomatch' (searched, absent). A transient
-    network error is NOT written - the row simply stays 'pending' for the
-    next sweep.
+    status is 'done' (matched, tmdb_id points at a posters row) or 'nomatch'
+    (searched, absent - tmdb_id stays NULL). The artwork itself is written to
+    the posters table by the caller; a transient network error is NOT written
+    here - the row simply stays 'pending' for the next sweep.
     """
     await session.execute(
         update(Title)
@@ -281,10 +281,24 @@ async def set_enrichment(
         .values(
             enrich_status=status,
             tmdb_id=tmdb_id,
-            poster_url=poster_url,
             enriched_at=func.now(),
         )
     )
+
+
+async def mark_all_pending(session: AsyncSession) -> int:
+    """Flip every not-yet-matched title back to 'pending' for a full sweep.
+
+    Reaches 'skip' (the historical index 0006 retired) and 'nomatch' (a past
+    miss the article-fix reparse may now resolve). Titles already 'done' keep
+    their poster. Returns how many rows were re-queued.
+    """
+    result = await session.execute(
+        update(Title)
+        .where(Title.enrich_status.in_(("skip", "nomatch")))
+        .values(enrich_status="pending", tmdb_id=None, enriched_at=None)
+    )
+    return result.rowcount or 0
 
 
 async def merge_metadata(

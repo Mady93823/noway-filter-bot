@@ -15,6 +15,7 @@ from worker.enrich import (
     media_type,
     poster_url,
     result_title,
+    result_year,
 )
 
 
@@ -72,3 +73,46 @@ def test_decide_series_uses_name_field():
     out = decide(_title("wednesday", season=1), result, 0.6)
     assert out.status == STATUS_DONE
     assert out.tmdb_id == 119051
+
+
+def test_result_year_parses_by_media_type():
+    assert result_year({"release_date": "2012-10-26"}, "movie") == 2012
+    assert result_year({"first_air_date": "2022-11-23"}, "tv") == 2022
+    # Blank / missing / wrong-field-for-type -> None (no basis to reject).
+    assert result_year({"release_date": ""}, "movie") is None
+    assert result_year({"first_air_date": "2022-11-23"}, "movie") is None
+
+
+def test_decide_rejects_wrong_year_edition():
+    # Our "Skyfall" is 2012; a result dated 1999 is a different film reusing
+    # the name - reject rather than store its poster.
+    result = {"id": 5, "title": "Skyfall", "poster_path": "/x.jpg", "release_date": "1999-01-01"}
+    assert decide(_title("skyfall", year=2012), result, 0.6).status == STATUS_NOMATCH
+
+
+def test_decide_allows_one_year_of_slack():
+    # Festival vs wide-release drift of a single year still matches.
+    result = {"id": 6, "title": "Skyfall", "poster_path": "/x.jpg", "release_date": "2013-01-01"}
+    assert decide(_title("skyfall", year=2012), result, 0.6).status == STATUS_DONE
+
+
+def test_decide_no_year_either_side_does_not_reject():
+    # Our year unknown: year check has nothing to compare, similarity decides.
+    result = {"id": 7, "title": "Skyfall", "poster_path": "/x.jpg", "release_date": "1999-01-01"}
+    assert decide(_title("skyfall"), result, 0.6).status == STATUS_DONE
+
+
+def test_decide_carries_poster_metadata():
+    result = {
+        "id": 37724,
+        "title": "Skyfall",
+        "poster_path": "/x.jpg",
+        "release_date": "2012-10-26",
+        "overview": "Bond investigates an attack on MI6.",
+        "vote_average": 7.5,
+    }
+    out = decide(_title("skyfall", year=2012), result, 0.6)
+    assert out.status == STATUS_DONE
+    assert out.media_type == "movie"
+    assert out.overview.startswith("Bond")
+    assert out.vote == 7.5

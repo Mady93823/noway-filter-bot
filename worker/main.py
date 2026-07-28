@@ -217,9 +217,16 @@ async def enrich_dispatcher() -> None:
                 # take the worker down or spam admins. Log, back off, retry.
                 logger.warning("enrich batch failed: %s", exc)
                 processed = 0
-            await asyncio.sleep(
-                settings.enrich_interval if processed else idle_interval
-            )
+            # A full batch means a backlog is still draining (the whole-index
+            # sweep) - pause only briefly. A short/empty batch means caught up
+            # - idle long so a settled worker barely touches TMDB.
+            if processed >= settings.enrich_batch_size:
+                delay = settings.enrich_busy_interval
+            elif processed:
+                delay = settings.enrich_interval
+            else:
+                delay = idle_interval
+            await asyncio.sleep(delay)
 
 
 async def run() -> None:
