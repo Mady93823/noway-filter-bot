@@ -116,6 +116,9 @@ def register_callback_handlers(app: Client) -> None:
         # A malformed page renders as page 1 rather than being refused -
         # build_title clamps it against the real page count regardless.
         variant_page = int(parts[6]) if len(parts) > 6 and parts[6].isdigit() else 0
+        # Episode INDEX into the title's episode list ('-'/absent = all).
+        # build_title clamps an out-of-range index back to "all".
+        episode = int(parts[7]) if len(parts) > 7 and parts[7].isdigit() else None
 
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -127,7 +130,8 @@ def register_callback_handlers(app: Client) -> None:
             return
 
         text, keyboard = ui.build_title(
-            result, cursor, language=language, quality=quality, page=variant_page
+            result, cursor, language=language, quality=quality, page=variant_page,
+            episode=episode,
         )
         try:
             # A lone-hit card sent with a poster is a PHOTO message; its

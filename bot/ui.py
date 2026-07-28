@@ -565,6 +565,20 @@ def resolution_of(quality: str | None) -> str | None:
     return next((word for word in quality.split() if word in _RESOLUTIONS), None)
 
 
+def _variant_episodes(result: TitleResult) -> list[str]:
+    """Episode labels present on this title's files, in listing order.
+
+    files_for_titles already returns variants episode-ascending, so this is
+    E01-E04 then E05-E08 then ... - the order a season reads in. The INDEX
+    into this list is what an episode chip's callback carries.
+    """
+    seen: list[str] = []
+    for variant in result.variants:
+        if variant.episodes and variant.episodes not in seen:
+            seen.append(variant.episodes)
+    return seen
+
+
 def _variant_resolutions(result: TitleResult) -> list[str]:
     """Resolutions present on this title's files, best first.
 
@@ -586,6 +600,7 @@ def title_callback(
     language: str | None = None,
     quality: str | None = None,
     page: int = 0,
+    episode: int | None = None,
 ) -> str:
     """Callback data for one state of the title view.
 
@@ -593,24 +608,82 @@ def title_callback(
     stay far inside Telegram's 64-byte budget and older 4-/5-field buttons
     still round-trip:
 
-        t:<id>:<qhash>:<off>                      everything, first page
-        t:<id>:<qhash>:<off>:<lang>               one audio language
-        t:<id>:<qhash>:<off>:<lang>:<qual>:<page> full state, '-' = unset
+        t:<id>:<qhash>:<off>                          everything, first page
+        t:<id>:<qhash>:<off>:<lang>                   one audio language
+        t:<id>:<qhash>:<off>:<lang>:<qual>:<page>     audio+resolution+page
+        t:<id>:<qhash>:<off>:<lang>:<qual>:<page>:<ep>
+                                                      full state, '-' = unset.
+                                                      ep is an INDEX into the
+                                                      title's episode list (not
+                                                      the label), so a long
+                                                      "E01-E04" costs one digit.
     """
     code = short_code(language) if language else NO_FILTER
-    if quality is None and page == 0:
+    if quality is None and page == 0 and episode is None:
         if language is None:
             return f"t:{title_id}:{cursor}"
         return f"t:{title_id}:{cursor}:{code}"
-    return f"t:{title_id}:{cursor}:{code}:{quality or NO_FILTER}:{page}"
+    base = f"t:{title_id}:{cursor}:{code}:{quality or NO_FILTER}:{page}"
+    # Episode index is appended only when set, so every non-series callback
+    # stays byte-identical to before this field existed.
+    return base if episode is None else f"{base}:{episode}"
 
 
 def _chip_rows(chips: list[InlineKeyboardButton]) -> list[list[InlineKeyboardButton]]:
     return [chips[i : i + CHIPS_PER_ROW] for i in range(0, len(chips), CHIPS_PER_ROW)]
 
 
+def _episode_chips(
+    result: TitleResult,
+    cursor: str,
+    active: int | None,
+    language: str | None,
+    quality: str | None,
+) -> list[list[InlineKeyboardButton]]:
+    """Episode picker row(s) for a series. Empty for a movie or a title
+    with a single episode/pack - nothing to switch between.
+
+    This is what turns a 40-file season from a flat wall of buttons into
+    something navigable: one tap jumps straight to E13 instead of paging.
+    Mirrors the audio/resolution chip rows exactly - 🟢 marks the active
+    one, and every chip carries the current audio+resolution filters
+    through unchanged so picking an episode never widens them.
+    """
+    episodes = _variant_episodes(result)
+    if len(episodes) < 2:
+        return []
+
+    chips = [
+        InlineKeyboardButton(
+            "🟢 All eps" if active is None else "📺 All eps",
+            callback_data=title_callback(
+                result.title_id, cursor, language=language, quality=quality
+            ),
+        )
+    ]
+    for index, label in enumerate(episodes):
+        mark = "🟢 " if index == active else "📺 "
+        chips.append(
+            InlineKeyboardButton(
+                _truncate(f"{mark}{label}"),
+                callback_data=title_callback(
+                    result.title_id,
+                    cursor,
+                    language=language,
+                    quality=quality,
+                    episode=index,
+                ),
+            )
+        )
+    return _chip_rows(chips)
+
+
 def _language_chips(
-    result: TitleResult, cursor: str, active: str | None, quality: str | None
+    result: TitleResult,
+    cursor: str,
+    active: str | None,
+    quality: str | None,
+    episode: int | None,
 ) -> list[list[InlineKeyboardButton]]:
     """Audio filter row(s). Empty when the title has nothing to choose between.
 
@@ -634,7 +707,9 @@ def _language_chips(
             # Inactive form carries the same glyph as the card's Audio
             # row, so the two chip rows label themselves without a header.
             "🟢 All" if active is None else "🎧 All",
-            callback_data=title_callback(result.title_id, cursor, quality=quality),
+            callback_data=title_callback(
+                result.title_id, cursor, quality=quality, episode=episode
+            ),
         )
     ]
     for language in languages:
@@ -645,7 +720,11 @@ def _language_chips(
             InlineKeyboardButton(
                 _truncate(label),
                 callback_data=title_callback(
-                    result.title_id, cursor, language=language, quality=quality
+                    result.title_id,
+                    cursor,
+                    language=language,
+                    quality=quality,
+                    episode=episode,
                 ),
             )
         )
@@ -653,7 +732,11 @@ def _language_chips(
 
 
 def _quality_chips(
-    result: TitleResult, cursor: str, active: str | None, language: str | None
+    result: TitleResult,
+    cursor: str,
+    active: str | None,
+    language: str | None,
+    episode: int | None,
 ) -> list[list[InlineKeyboardButton]]:
     """Resolution filter row(s), the counterpart to the audio chips.
 
@@ -669,7 +752,9 @@ def _quality_chips(
     chips = [
         InlineKeyboardButton(
             "🟢 Any" if active is None else "🎚 Any",
-            callback_data=title_callback(result.title_id, cursor, language=language),
+            callback_data=title_callback(
+                result.title_id, cursor, language=language, episode=episode
+            ),
         )
     ]
     for resolution in resolutions:
@@ -678,7 +763,11 @@ def _quality_chips(
             InlineKeyboardButton(
                 _truncate(f"{mark}{resolution}"),
                 callback_data=title_callback(
-                    result.title_id, cursor, language=language, quality=resolution
+                    result.title_id,
+                    cursor,
+                    language=language,
+                    quality=resolution,
+                    episode=episode,
                 ),
             )
         )
@@ -702,21 +791,30 @@ def build_title(
     language: str | None = None,
     quality: str | None = None,
     page: int = 0,
+    episode: int | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """One title's file picker: filtered by audio/resolution, one page at a time.
+    """One title's file picker: filtered by episode/audio/resolution, one
+    page at a time.
 
     cursor is always the page this title was opened from - the chips need
     it even when there is no results list to go back to (a lone hit).
+    episode is an INDEX into _variant_episodes(result); None means "all".
     """
+    episodes = _variant_episodes(result)
+    active_episode = (
+        episodes[episode] if episode is not None and 0 <= episode < len(episodes) else None
+    )
     variants = [
         variant
         for variant in result.variants
         if (language is None or _variant_has_language(variant, language))
         and (quality is None or resolution_of(variant.quality) == quality)
+        and (active_episode is None or variant.episodes == active_episode)
     ]
     if not variants:  # a chip combination no file actually satisfies
         variants = list(result.variants)
-        language = quality = None
+        language = quality = active_episode = None
+        episode = None
 
     # Clamped rather than trusted: a stale keyboard can name a page that
     # the current filter no longer has.
@@ -737,6 +835,7 @@ def build_title(
     active_filters = [
         label
         for label in (
+            escape(active_episode) if active_episode else None,
             f"{escape(language)} audio" if language else None,
             escape(quality) if quality else None,
         )
@@ -762,8 +861,11 @@ def build_title(
     # already said it - repeating it on each button only eats the space
     # the episode/quality labels need.
     show_languages = len({variant.languages for variant in shown}) > 1
-    rows = _quality_chips(result, cursor, quality, language)
-    rows += _language_chips(result, cursor, language, quality)
+    # Episode row first: for a series it is the primary axis, the one that
+    # answers "which episode" before "which quality".
+    rows = _episode_chips(result, cursor, episode, language, quality)
+    rows += _quality_chips(result, cursor, quality, language, episode)
+    rows += _language_chips(result, cursor, language, quality, episode)
     rows += [[_variant_button(variant, show_languages)] for variant in shown]
 
     if pages > 1:
@@ -775,6 +877,7 @@ def build_title(
                     callback_data=title_callback(
                         result.title_id, cursor,
                         language=language, quality=quality, page=page - 1,
+                        episode=episode,
                     ),
                 )
             )
@@ -790,6 +893,7 @@ def build_title(
                     callback_data=title_callback(
                         result.title_id, cursor,
                         language=language, quality=quality, page=page + 1,
+                        episode=episode,
                     ),
                 )
             )
