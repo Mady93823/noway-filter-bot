@@ -58,6 +58,27 @@ def test_junk_and_channel_tag_stripped():
     assert parsed.quality == "720p"
 
 
+def test_leading_bracket_uploader_tag_stripped():
+    # "[MW] Avengers Endgame" must resolve to the same title as the clean
+    # name - the tag's letters must not survive as a leading title word and
+    # spawn a "mw avengers endgame" duplicate row.
+    for name in (
+        "[MW].Avengers.Endgame.2019.720p.HDRip.x264.mkv",
+        "{CF} Avengers Endgame 2019 480p BluRay.mkv",
+        "@FBM Avengers Endgame 2019 480p BluRay english.mkv",
+    ):
+        parsed = parse_media(name)
+        assert parsed.title_guess == "avengers endgame", name
+        assert parsed.year == 2019, name
+
+
+def test_leading_tag_only_does_not_empty_title():
+    # A file that is nothing but a tag keeps its text rather than parsing
+    # to an empty title.
+    parsed = parse_media("[MW].mkv")
+    assert parsed.title_guess == "mw"
+
+
 def test_caption_fallback_when_no_filename():
     parsed = parse_media(None, caption="Ponniyin Selvan 2022 Tamil 1080p")
     assert parsed.title_guess == "ponniyin selvan"

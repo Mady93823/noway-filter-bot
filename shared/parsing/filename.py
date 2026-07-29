@@ -37,6 +37,17 @@ from shared.parsing.quality import (
 _EXTENSION_RE = re.compile(
     r"\.(mkv|mp4|avi|webm|mov|wmv|flv|m4v|ts|m2ts)$", re.IGNORECASE
 )
+# Leading uploader / release-group tags: "[MW] Avengers", "{CF}.Movie",
+# "@Channel Movie". Peeled off the FRONT before tokenizing so the tag's
+# letters ("mw", "cf") don't survive as title words and split one film
+# into a dozen near-duplicate canonical rows. Only a LEADING run is
+# stripped - a bracket group later in the name is ordinary metadata the
+# debris-drop already handles, and a bracket is capped at 15 chars so a
+# genuine "[Director's Cut]"-length note in front is left intact. Real
+# titles effectively never open with a bracket/handle tag.
+_LEADING_TAG_RE = re.compile(
+    r"^(?:\s*(?:\[[^\]]{1,15}\]|\{[^}]{1,15}\}|@[A-Za-z0-9_]+)\s*[-._]*)+"
+)
 # ':' and ';' are separators too - "Spider-Man: No.Way.Home" must
 # canonicalize the same whether or not the uploader kept the colon.
 _SPLIT_RE = re.compile(r"[.\-_\s()\[\]{}+,!|~#&*%:;]+")
@@ -260,6 +271,12 @@ def parse_media(file_name: str | None, caption: str | None = None) -> ParsedMedi
     if "%" in primary:
         primary = unquote(primary)  # "The%20Dark%20Knight" happens
     primary = _EXTENSION_RE.sub("", primary)
+    # Peel leading uploader/group tags ("[MW]", "@FBM") before tokenizing.
+    # Guard: never let the strip empty the name - a file that is ONLY a tag
+    # ("[MW].mkv") keeps its original text rather than parsing to nothing.
+    stripped_lead = _LEADING_TAG_RE.sub("", primary).strip()
+    if stripped_lead:
+        primary = stripped_lead
     tokens = tokenize(primary)
 
     consumed = [False] * len(tokens)
