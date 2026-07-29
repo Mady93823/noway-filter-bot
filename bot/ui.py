@@ -238,6 +238,16 @@ def expired_text() -> str:
     return "⌛ These results expired.\n\n🔁 Just send your search again."
 
 
+def not_your_card_alert() -> str:
+    """Shown when someone taps a group card another user opened.
+
+    Plain text: it renders in a callback alert popup, where HTML tags would
+    print literally. Loud and playful on purpose - a dry "not permitted"
+    reads as the bot being broken; this reads as the bot having a personality.
+    """
+    return "🙅‍♂️ BRUHHH!!! 😤\n\nIt's not for you 💀 Search something yourself 🔍✨"
+
+
 def build_suggestions(
     query: str, suggestions: tuple[Suggestion, ...]
 ) -> tuple[str, InlineKeyboardMarkup]:

@@ -66,6 +66,14 @@ def test_with_poster_preview_no_url_is_noop():
     assert ui.with_poster_preview("body", None) == "body"
 
 
+def test_not_your_card_alert_is_plain_text():
+    # Shown in a callback alert popup, which renders no HTML - so it must
+    # carry no tags that would print literally.
+    alert = ui.not_your_card_alert()
+    assert "<" not in alert and ">" not in alert
+    assert "BRUHHH" in alert
+
+
 def test_format_size():
     assert ui.format_size(None) == "?"
     assert ui.format_size(0) == "?"

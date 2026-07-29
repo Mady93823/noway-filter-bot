@@ -16,7 +16,7 @@ from pyrogram.enums import ChatType, ParseMode
 from pyrogram.errors import MessageNotModified
 from pyrogram.types import CallbackQuery
 
-from bot import access, gate, guards, ui
+from bot import access, gate, guards, ownership, ui
 from bot.delivery import send_file
 from bot.ephemeral import schedule_delete
 from shared import settings_store
@@ -31,18 +31,39 @@ logger = logging.getLogger(__name__)
 
 
 async def _retrack_group_expiry(callback: CallbackQuery, new_msg) -> None:
-    """Re-arm the group auto-delete after a card is REPLACED, not edited.
+    """Re-arm auto-delete AND ownership after a card is REPLACED, not edited.
 
     A text<->photo transition cannot be an edit, so those paths send a fresh
-    message and drop the old one. The group deletion schedule still points at
-    the old id, so the replacement would otherwise live forever - re-schedule
-    it on the same TTL. A no-op in PM, where nothing self-deletes.
+    message and drop the old one - a new message id the old schedule and the
+    old owner record both miss. Re-point both at the replacement on the same
+    TTL: whoever navigated here is by definition the card's owner (the guard
+    let them through). A no-op in PM, where nothing self-deletes or is owned.
     """
     if new_msg is None or callback.message.chat.type == ChatType.PRIVATE:
         return
-    await schedule_delete(
-        new_msg.chat.id, new_msg.id, get_settings().group_message_ttl
-    )
+    ttl = get_settings().group_message_ttl
+    await schedule_delete(new_msg.chat.id, new_msg.id, ttl)
+    if callback.from_user is not None:
+        await ownership.remember(
+            new_msg.chat.id, new_msg.id, callback.from_user.id, ttl
+        )
+
+
+async def _owns_card(callback: CallbackQuery) -> bool:
+    """Whether this user may drive this card's buttons.
+
+    Always true in PM (one user) and for admins (they can touch anything).
+    In a group, true only for the user who opened the card - looked up in
+    Redis, fail-open when the owner is unknown (see bot.ownership).
+    """
+    msg = callback.message
+    if not msg or msg.chat.type == ChatType.PRIVATE:
+        return True
+    user_id = callback.from_user.id if callback.from_user else None
+    if user_id is not None and user_id in get_settings().admin_ids:
+        return True
+    owner = await ownership.owner_of(msg.chat.id, msg.id)
+    return owner is None or owner == user_id
 
 
 def register_callback_handlers(app: Client) -> None:
@@ -69,6 +90,9 @@ def register_callback_handlers(app: Client) -> None:
         """
         if await _blocked(callback):
             return
+        if not await _owns_card(callback):
+            await callback.answer(ui.not_your_card_alert(), show_alert=True)
+            return
         title_id = int(callback.data[len("dym:") :])
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -94,6 +118,9 @@ def register_callback_handlers(app: Client) -> None:
     @app.on_callback_query(filters.regex(r"^nav:"))
     async def _on_nav(client: Client, callback: CallbackQuery) -> None:
         if await _blocked(callback):
+            return
+        if not await _owns_card(callback):
+            await callback.answer(ui.not_your_card_alert(), show_alert=True)
             return
         cursor = callback.data[len("nav:") :]
         session_factory = get_session_factory()
@@ -131,6 +158,9 @@ def register_callback_handlers(app: Client) -> None:
     @app.on_callback_query(filters.regex(r"^t:\d+:"))
     async def _on_title(client: Client, callback: CallbackQuery) -> None:
         if await _blocked(callback):
+            return
+        if not await _owns_card(callback):
+            await callback.answer(ui.not_your_card_alert(), show_alert=True)
             return
         # t:<title_id>:<qhash>:<offset>[:<lang>[:<res>:<page>]] - see the
         # grammar in bot.ui. The short forms are not just legacy: an
@@ -266,6 +296,9 @@ def register_callback_handlers(app: Client) -> None:
 
     @app.on_callback_query(filters.regex(r"^x$"))
     async def _on_close(client: Client, callback: CallbackQuery) -> None:
+        if not await _owns_card(callback):
+            await callback.answer(ui.not_your_card_alert(), show_alert=True)
+            return
         try:
             await callback.message.delete()
         except Exception:  # message may already be gone

@@ -18,7 +18,7 @@ from pyrogram import Client, filters
 from pyrogram.enums import ChatType, ParseMode
 from pyrogram.types import Message
 
-from bot import guards, ui
+from bot import guards, ownership, ui
 from bot.ephemeral import expire_in_group
 from shared import logchannel, settings_store
 from shared.config import get_settings
@@ -38,6 +38,19 @@ async def _is_plain_text(_, __, message: Message) -> bool:
 
 
 _plain_text = filters.create(_is_plain_text)
+
+
+async def _own_group_card(message: Message, sent: Message | None) -> None:
+    """Tag a group card with the searcher's id so only they can drive it.
+
+    A no-op in PM (single user) and when nothing was sent. TTL matches the
+    card's own auto-delete, so the ownership record never outlives the card.
+    """
+    if sent is None or message.chat.type == ChatType.PRIVATE:
+        return
+    await ownership.remember(
+        sent.chat.id, sent.id, message.from_user.id, get_settings().group_message_ttl
+    )
 
 # Module-level so it can be exercised directly in tests. The ban guard is
 # deliberately NOT part of it: this stays a pure predicate over the
@@ -150,6 +163,7 @@ def register_search_handlers(app: Client) -> None:
             # In a group the card is temporary; the file itself is
             # delivered in PM and stays there.
             await expire_in_group(message, sent)
+            await _own_group_card(message, sent)
             return
 
         # Demand is counted for group misses too: a title people keep
@@ -188,6 +202,9 @@ def register_search_handlers(app: Client) -> None:
                     ui.no_results_text(query), parse_mode=ParseMode.HTML, quote=True
                 )
             await expire_in_group(message, sent)
+            # Only the suggestions card has buttons worth owning; the plain
+            # no-results text has none, but tagging it too is harmless.
+            await _own_group_card(message, sent)
             return
 
         # PM: an answer always goes out. Suggestions first; otherwise read
