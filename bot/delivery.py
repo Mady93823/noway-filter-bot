@@ -5,9 +5,9 @@ import logging
 from pyrogram import Client
 from pyrogram.enums import ParseMode
 
-from bot import ui
+from bot import fun, ui
 from bot.ephemeral import schedule_delivery_expiry
-from shared import logchannel
+from shared import logchannel, settings_store
 from shared.config import get_settings
 from shared.db.engine import get_session_factory
 from shared.logchannel import log_event
@@ -54,6 +54,7 @@ async def send_file(
             file.file_size,
             title.season,
             file.episodes,
+            hype=fun.delivery_hype(await settings_store.fun_mode()),
         ),
         parse_mode=ParseMode.HTML,
     )

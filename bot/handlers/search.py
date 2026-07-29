@@ -18,7 +18,7 @@ from pyrogram import Client, filters
 from pyrogram.enums import ChatType, ParseMode
 from pyrogram.types import Message
 
-from bot import guards, ownership, ui
+from bot import fun, guards, ownership, ui
 from bot.ephemeral import expire_in_group
 from shared import logchannel, settings_store
 from shared.config import get_settings
@@ -114,6 +114,14 @@ def register_search_handlers(app: Client) -> None:
         # back at all, and how a PM miss is answered.
         intent = detect_intent(query)
         is_group = message.chat.type != ChatType.PRIVATE
+        funmode = await settings_store.fun_mode()
+        if funmode:
+            # A reaction on the searcher's own message - pure flavour, and
+            # never allowed to break a search if the chat forbids reactions.
+            try:
+                await message.react(fun.search_reaction())
+            except Exception:
+                pass
 
         session_factory = get_session_factory()
         async with session_factory() as session:
@@ -133,7 +141,11 @@ def register_search_handlers(app: Client) -> None:
             await cache.store_last_query(
                 cache.conversation_scope(message.chat.id, message.from_user.id), used
             )
-            text, keyboard = ui.build_results(page, get_settings().search_page_size)
+            text, keyboard = ui.build_results(
+                page,
+                get_settings().search_page_size,
+                flair=fun.count_vibe(page.total, funmode),
+            )
             # A lone hit with a stored poster shows the artwork; HOW depends
             # on the admin's poster mode. 'photo' sends a real photo card
             # whose in-view chip/page updates edit the caption (see
@@ -198,8 +210,11 @@ def register_search_handlers(app: Client) -> None:
                     text, parse_mode=ParseMode.HTML, reply_markup=keyboard, quote=True
                 )
             else:
+                miss = (fun.easter_egg(query) if funmode else None) or fun.no_results(
+                    query, funmode
+                )
                 sent = await message.reply_text(
-                    ui.no_results_text(query), parse_mode=ParseMode.HTML, quote=True
+                    miss, parse_mode=ParseMode.HTML, quote=True
                 )
             await expire_in_group(message, sent)
             # Only the suggestions card has buttons worth owning; the plain
@@ -217,11 +232,13 @@ def register_search_handlers(app: Client) -> None:
             return
 
         if intent is Intent.GREETING:
-            reply = ui.greeting_text(message.from_user.mention)
+            reply = fun.greeting(message.from_user.mention, funmode)
         elif intent is Intent.THANKS:
-            reply = ui.thanks_text()
+            reply = fun.thanks(funmode)
         elif intent is Intent.HELP:
-            reply = ui.chat_help_text()
+            reply = fun.chat_help(funmode)
         else:
-            reply = ui.no_results_text(query)
+            reply = (fun.easter_egg(query) if funmode else None) or fun.no_results(
+                query, funmode
+            )
         await message.reply_text(reply, parse_mode=ParseMode.HTML, quote=True)

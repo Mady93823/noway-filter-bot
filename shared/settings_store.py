@@ -56,6 +56,11 @@ POSTER_MODE_PHOTO = "photo"
 POSTER_MODE_THUMB = "thumb"
 DEFAULT_POSTER_MODE = POSTER_MODE_PHOTO
 
+# Whether the bot speaks in its playful "genz" voice (roasts, hype lines,
+# emoji reactions, easter eggs) or its plain default voice. Off by default -
+# an admin opts in with /funmode on.
+FUN_MODE = "fun_mode"
+
 
 async def get_setting(key: str) -> str | None:
     redis = get_redis()
@@ -129,6 +134,11 @@ async def poster_mode() -> str:
     """
     raw = await get_setting(POSTER_MODE)
     return raw if raw in (POSTER_MODE_PHOTO, POSTER_MODE_THUMB) else DEFAULT_POSTER_MODE
+
+
+async def fun_mode() -> bool:
+    """True when the playful genz voice is switched on (default off)."""
+    return (await get_setting(FUN_MODE)) == "1"
 
 
 async def shortener_config() -> tuple[str | None, str]:

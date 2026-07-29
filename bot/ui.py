@@ -1011,7 +1011,9 @@ def results_photo_url(page: SearchPage) -> str | None:
     return None
 
 
-def build_results(page: SearchPage, page_size: int) -> tuple[str, InlineKeyboardMarkup]:
+def build_results(
+    page: SearchPage, page_size: int, flair: str | None = None
+) -> tuple[str, InlineKeyboardMarkup]:
     """Results message + keyboard. Caller guarantees page.results non-empty.
 
     A lone hit skips the list entirely and opens straight into its
@@ -1053,6 +1055,11 @@ def build_results(page: SearchPage, page_size: int) -> tuple[str, InlineKeyboard
             counter += f"   ·   🤔 <b>{close}</b> close"
     if pages > 1:
         counter += f"   ·   📄 page <b>{current}</b> of <b>{pages}</b>"
+    # Funmode flair rides on the end of the counter line (escaped - it comes
+    # from a fixed pool, but this keeps the one rule "user-facing text is
+    # escaped" with no exceptions to reason about).
+    if flair:
+        counter += f"   ·   {escape(flair)}"
 
     rows: list[list[InlineKeyboardButton]] = []
     entries: list[str] = []
@@ -1147,12 +1154,16 @@ def delivery_caption(
     file_size: int | None,
     season: int | None = None,
     episodes: str | None = None,
+    hype: str | None = None,
 ) -> str:
     """The caption on the delivered file itself.
 
     One fact per line, each behind its own glyph. This caption is read on
     a file bubble that is already busy with a filename and a progress bar,
     and a single dot-separated run of details just disappears into that.
+
+    hype is the optional funmode flourish - a short genz line that replaces
+    the plain "Enjoy your movie!" sign-off when the playful voice is on.
     """
     # TODO(sticker): a "🍿 enjoy" sticker could follow the file here - but
     # only ever AFTER the expiry warning, never between file and warning.
@@ -1172,5 +1183,5 @@ def delivery_caption(
     if file_size:
         parts.append(f"📦 {format_size(file_size)}")
     parts.append("")
-    parts.append("🍿 <i>Enjoy your movie!</i>")
+    parts.append(f"🍿 <i>{escape(hype)}</i>" if hype else "🍿 <i>Enjoy your movie!</i>")
     return "\n".join(parts)

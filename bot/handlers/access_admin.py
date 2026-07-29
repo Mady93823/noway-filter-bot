@@ -31,6 +31,7 @@ from shared.logchannel import log_event
 from shared.settings_store import (
     ACCESS_HOURS,
     DEFAULT_SHORTENER_BASE,
+    FUN_MODE,
     GATE_ENABLED,
     LOG_CHANNEL,
     POSTER_MODE,
@@ -40,6 +41,7 @@ from shared.settings_store import (
     SHORTENER_BASE,
     access_hours,
     clear_setting,
+    fun_mode,
     gate_enabled,
     log_channel_id,
     mask_token,
@@ -207,6 +209,26 @@ def register_access_handlers(app: Client) -> None:
             parse_mode=ParseMode.HTML,
         )
 
+    @app.on_message(admin_pm & filters.command("funmode"))
+    async def _on_funmode(client: Client, message: Message) -> None:
+        parts = (message.text or "").split()
+        if len(parts) != 2 or parts[1].lower() not in ("on", "off"):
+            state = "ON" if await fun_mode() else "OFF"
+            await message.reply_text(
+                f"Fun voice is <b>{state}</b>.\n"
+                "Usage: <code>/funmode on</code> | <code>/funmode off</code>\n\n"
+                "<blockquote>😎 <b>on</b> — genz voice: roasts, hype lines, "
+                "emoji reactions, easter eggs\n"
+                "🎩 <b>off</b> — the plain, straight-faced voice</blockquote>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        await set_setting(FUN_MODE, "1" if parts[1].lower() == "on" else "0")
+        if parts[1].lower() == "on":
+            await message.reply_text("😎 Fun mode <b>ON</b> — we vibin now 🔥", parse_mode=ParseMode.HTML)
+        else:
+            await message.reply_text("🎩 Fun mode <b>OFF</b> — back to business.", parse_mode=ParseMode.HTML)
+
     @app.on_message(admin_pm & filters.command("addpremium"))
     async def _on_addpremium(client: Client, message: Message) -> None:
         parts = (message.text or "").split()
@@ -301,6 +323,7 @@ def register_access_handlers(app: Client) -> None:
             f"🔗 <b>Shortener</b>   {mask_token(token) if token else 'not set'}\n"
             f"🌐 <b>Endpoint</b>   {base}\n"
             f"🖼 <b>Poster mode</b>   {await poster_mode()}\n"
+            f"😎 <b>Fun voice</b>   {'ON' if await fun_mode() else 'OFF'}\n"
             f"💎 <b>Active access</b>   {active} user(s)"
             "</blockquote>",
             parse_mode=ParseMode.HTML,
