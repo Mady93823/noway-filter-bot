@@ -5,7 +5,7 @@ import logging
 from pyrogram import Client
 from pyrogram.enums import ParseMode
 
-from bot import fun, ui
+from bot import engagement, fun, ui
 from bot.ephemeral import schedule_delivery_expiry
 from shared import logchannel, settings_store
 from shared.config import get_settings
@@ -41,6 +41,13 @@ async def send_file(
         )
         return False
 
+    # Funmode caption sign-off: a download milestone / first-of-day nod wins
+    # over the random hype line; None in plain mode falls back to "Enjoy".
+    hype = None
+    if await settings_store.fun_mode():
+        recipient = user.id if user is not None else chat_id
+        hype = await engagement.touch_download(recipient) or fun.delivery_hype(True)
+
     sent = await client.send_cached_media(
         chat_id,
         file.telegram_file_id,
@@ -54,7 +61,7 @@ async def send_file(
             file.file_size,
             title.season,
             file.episodes,
-            hype=fun.delivery_hype(await settings_store.fun_mode()),
+            hype=hype,
         ),
         parse_mode=ParseMode.HTML,
     )

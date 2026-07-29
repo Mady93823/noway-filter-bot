@@ -18,7 +18,7 @@ from pyrogram import Client, filters
 from pyrogram.enums import ChatType, ParseMode
 from pyrogram.types import Message
 
-from bot import fun, guards, ownership, ui
+from bot import engagement, fun, guards, ownership, ui
 from bot.ephemeral import expire_in_group
 from shared import logchannel, settings_store
 from shared.config import get_settings
@@ -141,10 +141,14 @@ def register_search_handlers(app: Client) -> None:
             await cache.store_last_query(
                 cache.conversation_scope(message.chat.id, message.from_user.id), used
             )
+            # Funmode flair on the counter: the result-count vibe plus the
+            # user's search streak (streak advances at most once per day).
+            flair_bits = [fun.count_vibe(page.total, funmode)]
+            if funmode:
+                flair_bits.append(await engagement.touch_search(message.from_user.id))
+            flair = "   ·   ".join(bit for bit in flair_bits if bit) or None
             text, keyboard = ui.build_results(
-                page,
-                get_settings().search_page_size,
-                flair=fun.count_vibe(page.total, funmode),
+                page, get_settings().search_page_size, flair=flair
             )
             # A lone hit with a stored poster shows the artwork; HOW depends
             # on the admin's poster mode. 'photo' sends a real photo card
