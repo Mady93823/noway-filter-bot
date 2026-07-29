@@ -18,6 +18,8 @@ from pyrogram.types import CallbackQuery
 
 from bot import access, gate, guards, ui
 from bot.delivery import send_file
+from bot.ephemeral import schedule_delete
+from shared import settings_store
 from shared.config import get_settings
 from shared.db.engine import get_session_factory
 from shared.db.repos import titles as titles_repo
@@ -26,6 +28,21 @@ from shared.parsing.languages import canonical_language
 from shared.search.service import search
 
 logger = logging.getLogger(__name__)
+
+
+async def _retrack_group_expiry(callback: CallbackQuery, new_msg) -> None:
+    """Re-arm the group auto-delete after a card is REPLACED, not edited.
+
+    A text<->photo transition cannot be an edit, so those paths send a fresh
+    message and drop the old one. The group deletion schedule still points at
+    the old id, so the replacement would otherwise live forever - re-schedule
+    it on the same TTL. A no-op in PM, where nothing self-deletes.
+    """
+    if new_msg is None or callback.message.chat.type == ChatType.PRIVATE:
+        return
+    await schedule_delete(
+        new_msg.chat.id, new_msg.id, get_settings().group_message_ttl
+    )
 
 
 def register_callback_handlers(app: Client) -> None:
@@ -88,10 +105,25 @@ def register_callback_handlers(app: Client) -> None:
             return
 
         text, keyboard = ui.build_results(page, get_settings().search_page_size)
+        msg = callback.message
         try:
-            await callback.edit_message_text(
-                text, parse_mode=ParseMode.HTML, reply_markup=keyboard
-            )
+            if msg and msg.photo:
+                # Returning to the list from a photo detail: a text list
+                # cannot be an edit of a photo message, so send it fresh and
+                # drop the photo. (Page turns arrive here too, but on a text
+                # list - those still take the plain edit branch below.)
+                sent = await client.send_message(
+                    msg.chat.id, text, parse_mode=ParseMode.HTML, reply_markup=keyboard
+                )
+                await _retrack_group_expiry(callback, sent)
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+            else:
+                await callback.edit_message_text(
+                    text, parse_mode=ParseMode.HTML, reply_markup=keyboard
+                )
         except MessageNotModified:
             pass
         await callback.answer()
@@ -137,13 +169,47 @@ def register_callback_handlers(app: Client) -> None:
             result, cursor, language=language, quality=quality, page=variant_page,
             episode=episode, seasons=seasons,
         )
+        mode = await settings_store.poster_mode()
+        msg = callback.message
         try:
-            # A lone-hit card sent with a poster is a PHOTO message; its
-            # chip/page updates edit the caption, since a photo message has
-            # no text to edit (and cannot be turned into one).
-            if callback.message and callback.message.photo:
+            if msg and msg.photo:
+                # Already a photo card (a lone hit, or a detail we spawned):
+                # a photo message has no text body, so its chip/page updates
+                # edit the caption. The poster image is fixed at creation -
+                # switching a season sibling updates the caption, not the art.
                 await callback.edit_message_caption(
                     text, parse_mode=ParseMode.HTML, reply_markup=keyboard
+                )
+            elif result.poster_url and mode == settings_store.POSTER_MODE_PHOTO:
+                # Text list -> real photo detail. Telegram cannot edit a text
+                # message into a photo, so send a fresh photo card and drop
+                # the list; "back" rebuilds the list (see _on_nav). A dead
+                # poster URL falls back to editing the text in place.
+                sent = None
+                try:
+                    sent = await client.send_photo(
+                        msg.chat.id, result.poster_url, caption=text,
+                        parse_mode=ParseMode.HTML, reply_markup=keyboard,
+                    )
+                except Exception as exc:
+                    logger.warning("poster card send failed (%s); text fallback", exc)
+                if sent is not None:
+                    await _retrack_group_expiry(callback, sent)
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+                else:
+                    await callback.edit_message_text(
+                        text, parse_mode=ParseMode.HTML, reply_markup=keyboard
+                    )
+            elif result.poster_url and mode == settings_store.POSTER_MODE_THUMB:
+                # Text card stays text; the poster rides along as a link
+                # preview, so the open (and every chip edit after it) is a
+                # plain in-place text edit.
+                await callback.edit_message_text(
+                    ui.with_poster_preview(text, result.poster_url),
+                    parse_mode=ParseMode.HTML, reply_markup=keyboard,
                 )
             else:
                 await callback.edit_message_text(

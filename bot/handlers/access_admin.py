@@ -33,6 +33,9 @@ from shared.settings_store import (
     DEFAULT_SHORTENER_BASE,
     GATE_ENABLED,
     LOG_CHANNEL,
+    POSTER_MODE,
+    POSTER_MODE_PHOTO,
+    POSTER_MODE_THUMB,
     SHORTENER_API,
     SHORTENER_BASE,
     access_hours,
@@ -40,6 +43,7 @@ from shared.settings_store import (
     gate_enabled,
     log_channel_id,
     mask_token,
+    poster_mode,
     set_setting,
     shortener_config,
 )
@@ -179,6 +183,30 @@ def register_access_handlers(app: Client) -> None:
             parse_mode=ParseMode.HTML,
         )
 
+    @app.on_message(admin_pm & filters.command("postermode"))
+    async def _on_postermode(client: Client, message: Message) -> None:
+        parts = (message.text or "").split()
+        valid = (POSTER_MODE_PHOTO, POSTER_MODE_THUMB)
+        if len(parts) != 2 or parts[1].lower() not in valid:
+            current = await poster_mode()
+            await message.reply_text(
+                f"Poster display is <b>{current}</b>.\n"
+                "Usage: <code>/postermode photo</code> | "
+                "<code>/postermode thumb</code>\n\n"
+                "<blockquote>📷 <b>photo</b> — tapping a title opens a full "
+                "poster card (replaces the list; “back” rebuilds it)\n"
+                "🖼 <b>thumb</b> — the card stays text with a small poster "
+                "preview beneath it</blockquote>\n"
+                "<i>Only affects titles that have a fetched poster.</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        await set_setting(POSTER_MODE, parts[1].lower())
+        await message.reply_text(
+            f"🖼 Poster mode set to <b>{parts[1].lower()}</b>.",
+            parse_mode=ParseMode.HTML,
+        )
+
     @app.on_message(admin_pm & filters.command("addpremium"))
     async def _on_addpremium(client: Client, message: Message) -> None:
         parts = (message.text or "").split()
@@ -272,6 +300,7 @@ def register_access_handlers(app: Client) -> None:
             f"⏱ <b>Unlock grants</b>   {await access_hours()}h\n"
             f"🔗 <b>Shortener</b>   {mask_token(token) if token else 'not set'}\n"
             f"🌐 <b>Endpoint</b>   {base}\n"
+            f"🖼 <b>Poster mode</b>   {await poster_mode()}\n"
             f"💎 <b>Active access</b>   {active} user(s)"
             "</blockquote>",
             parse_mode=ParseMode.HTML,

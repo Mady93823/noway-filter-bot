@@ -20,7 +20,7 @@ from pyrogram.types import Message
 
 from bot import guards, ui
 from bot.ephemeral import expire_in_group
-from shared import logchannel
+from shared import logchannel, settings_store
 from shared.config import get_settings
 from shared.db.engine import get_session_factory
 from shared.demand import record_miss
@@ -121,12 +121,16 @@ def register_search_handlers(app: Client) -> None:
                 cache.conversation_scope(message.chat.id, message.from_user.id), used
             )
             text, keyboard = ui.build_results(page, get_settings().search_page_size)
-            # A lone hit with a stored poster goes out as a photo card; its
-            # in-view chip/page updates edit the caption (see _on_title). A
-            # dead poster URL must never break search, so fall back to text.
+            # A lone hit with a stored poster shows the artwork; HOW depends
+            # on the admin's poster mode. 'photo' sends a real photo card
+            # whose in-view chip/page updates edit the caption (see
+            # _on_title); 'thumb' keeps it a text card with a link-preview
+            # thumbnail. A dead poster URL must never break search, so a
+            # failed photo send falls back to the text card.
             poster = ui.results_photo_url(page)
+            mode = await settings_store.poster_mode()
             sent = None
-            if poster:
+            if poster and mode == settings_store.POSTER_MODE_PHOTO:
                 try:
                     sent = await message.reply_photo(
                         poster,
@@ -138,6 +142,8 @@ def register_search_handlers(app: Client) -> None:
                 except Exception as exc:
                     logger.warning("poster send failed (%s); text fallback", exc)
             if sent is None:
+                if poster and mode == settings_store.POSTER_MODE_THUMB:
+                    text = ui.with_poster_preview(text, poster)
                 sent = await message.reply_text(
                     text, parse_mode=ParseMode.HTML, reply_markup=keyboard, quote=True
                 )

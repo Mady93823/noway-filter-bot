@@ -970,6 +970,23 @@ def build_title(
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
+def with_poster_preview(text: str, poster_url: str | None) -> str:
+    """Prefix an invisible anchor so a TEXT card renders the poster as a
+    link-preview thumbnail.
+
+    This is the 'thumb' poster mode: the detail card stays a text message,
+    so opening it and paging its chips remains a plain in-place edit (no
+    text<->photo message swap), and the image comes along as Telegram's link
+    preview rather than a full photo message. The anchor wraps a word-joiner
+    (U+2060), which is zero-width and non-breaking, so nothing visible is
+    added to the card - only the URL Telegram needs to fetch the preview.
+    Web preview must be left ENABLED on the send/edit for this to show.
+    """
+    if not poster_url:
+        return text
+    return f'<a href="{escape(poster_url, quote=True)}">⁠</a>{text}'
+
+
 def results_photo_url(page: SearchPage) -> str | None:
     """Poster to send the results card as a photo, or None to send text.
 

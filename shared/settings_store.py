@@ -41,9 +41,20 @@ SHORTENER_API = "shortener_api"
 SHORTENER_BASE = "shortener_base"
 GATE_ENABLED = "gate_enabled"
 ACCESS_HOURS = "access_hours"
+POSTER_MODE = "poster_mode"
 
 DEFAULT_SHORTENER_BASE = "https://arolinks.com/api"
 DEFAULT_ACCESS_HOURS = 4
+
+# How a title's poster surfaces when opened from a multi-result list:
+#   photo  the tapped card is sent as a real photo message (big poster on
+#          top, like a lone-hit result); the text list is dropped and
+#          rebuilt on "back".
+#   thumb  the card stays a text message and the poster rides along as a
+#          link-preview thumbnail, so navigation stays a plain in-place edit.
+POSTER_MODE_PHOTO = "photo"
+POSTER_MODE_THUMB = "thumb"
+DEFAULT_POSTER_MODE = POSTER_MODE_PHOTO
 
 
 async def get_setting(key: str) -> str | None:
@@ -108,6 +119,16 @@ async def access_hours() -> int:
     except ValueError:
         hours = DEFAULT_ACCESS_HOURS
     return max(1, hours)
+
+
+async def poster_mode() -> str:
+    """'photo' or 'thumb' - how a list-opened title shows its poster.
+
+    Anything unset or unrecognised falls back to the default rather than
+    letting a hand-edited junk value break the render path.
+    """
+    raw = await get_setting(POSTER_MODE)
+    return raw if raw in (POSTER_MODE_PHOTO, POSTER_MODE_THUMB) else DEFAULT_POSTER_MODE
 
 
 async def shortener_config() -> tuple[str | None, str]:

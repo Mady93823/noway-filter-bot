@@ -51,6 +51,21 @@ def _page() -> SearchPage:
     )
 
 
+def test_with_poster_preview_embeds_url_invisibly():
+    url = "https://image.tmdb.org/t/p/w342/abc.jpg"
+    out = ui.with_poster_preview("🍿 details", url)
+    # The URL is present (so Telegram fetches a preview) inside an anchor
+    # whose visible text is only a zero-width joiner - the card text itself
+    # is untouched.
+    assert url in out
+    assert out.endswith("🍿 details")
+    assert out.startswith("<a href=")
+
+
+def test_with_poster_preview_no_url_is_noop():
+    assert ui.with_poster_preview("body", None) == "body"
+
+
 def test_format_size():
     assert ui.format_size(None) == "?"
     assert ui.format_size(0) == "?"
